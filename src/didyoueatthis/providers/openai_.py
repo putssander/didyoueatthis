@@ -3,9 +3,9 @@
 Notes on determinism and metadata
 ---------------------------------
 * ``temperature`` and ``seed`` are sent unless the model is a reasoning model
-  (``gpt-5*``, ``o*``), which rejects sampling parameters; for those
-  ``reasoning_effort="minimal"`` is used so that the answer is a recall, not a
-  deliberation.
+  (``gpt-5*``, ``gpt-6*``, ``o*``), which rejects sampling parameters; for
+  those the lowest ``reasoning_effort`` the family accepts (``minimal``, or
+  ``low`` for gpt-6) is used so that the answer is a recall, not a deliberation.
 * ``logprobs`` are requested when ``Settings.logprobs`` is set and the model
   is not a reasoning model.  They are stored raw in ``raw_meta['logprobs']``
   as ``[(token, logprob), ...]`` for Min-K style analyses later.
@@ -23,7 +23,7 @@ from .base import Provider, Settings
 
 def _is_reasoning(model: str) -> bool:
     m = model.lower()
-    return m.startswith(("gpt-5", "o1", "o3", "o4"))
+    return m.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
 
 
 class OpenAIProvider(Provider):
@@ -48,7 +48,8 @@ class OpenAIProvider(Provider):
         kw: dict = dict(model=model, messages=messages, max_completion_tokens=probe.max_tokens)
         meta: dict = {}
         if _is_reasoning(model) and self.prefix == "openai":
-            kw["reasoning_effort"] = "minimal"
+            # Lowest reasoning setting the family accepts: recall, not deliberation.
+            kw["reasoning_effort"] = "low" if model.lower().startswith("gpt-6") else "minimal"
             meta["sampling"] = "omitted (reasoning model)"
         else:
             kw["temperature"] = self.settings.temperature
