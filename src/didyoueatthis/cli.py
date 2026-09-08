@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 from .core.probe import Probe, dump_jsonl, load_jsonl
 from .core.report import build_report, to_markdown
 from .core.cloze import build_cloze_probes
+from .core.sources import read_sources, source_notice, with_sources
 from .core.mcq import build_mcq_probes
 from .core.text import DEFAULT_PREFIX_WORDS, DEFAULT_SUFFIX_WORDS, build_text_probes, paraphrase_probes
 from .runner import RunConfig, ensure_dir, run_probes, score_responses
@@ -42,6 +43,12 @@ def _write_run(run_dir: str, probes, responses, scores, meta) -> dict:
     rp = os.path.join(run_dir, "responses.jsonl")
     if not os.path.exists(rp):
         dump_jsonl(rp, responses)
+    sources = list({json.dumps(s, sort_keys=True): s for p in probes for s in p.meta.get("sources", [])}.values())
+    if sources:
+        meta = {**meta, "sources": sources}
+        with open(os.path.join(run_dir, "SOURCES.md"), "w", encoding="utf-8") as f:
+            f.write("# Source credits and reuse notices\n\n" + source_notice(sources) +
+                    "\n\nPreserve these notices when sharing excerpts or adaptations. Review model replies for unrelated protected material.\n")
     rep = build_report(scores, meta)
     with open(os.path.join(run_dir, "report.json"), "w") as f:
         json.dump(rep, f, indent=2)
@@ -72,6 +79,7 @@ def _build_doc_probes(path, tier, a, methods, para):
     """All probe families requested for one document. `para` = (provider, model) for paraphrases or None."""
     did = os.path.splitext(os.path.basename(path))[0]
     text = open(path, encoding="utf-8").read()
+    sources = read_sources(path)
     prefixes = tuple(int(x) for x in a.prefix_words.split(","))
     probes = []
     if "continuation" in methods:
@@ -82,8 +90,8 @@ def _build_doc_probes(path, tier, a, methods, para):
         if para is None:
             print("mcq needs a paraphrasing model: pass --paraphrase-with (skipping mcq)", file=sys.stderr)
         else:
-            probes += build_mcq_probes(text, tier, did, para[0], para[1], a.passages, seed=a.seed)
-    return probes
+            probes += build_mcq_probes(text, tier, did, para[0], para[1], a.passages, seed=a.seed, sources=sources)
+    return with_sources(probes, sources)
 
 
 def _run_text_docs(targets, controls, models, a, run_dir, meta_extra):
@@ -186,7 +194,7 @@ def cmd_manual(a):
         probes = []
         for path, tier in [(a.doc, "target"), *[(c, "control") for c in (a.control or [])]]:
             did = os.path.splitext(os.path.basename(path))[0]
-            probes += build_text_probes(open(path, encoding="utf-8").read(), tier, did, a.passages, prefixes, a.suffix_words, a.seed)
+            probes += with_sources(build_text_probes(open(path, encoding="utf-8").read(), tier, did, a.passages, prefixes, a.suffix_words, a.seed), read_sources(path))
         ensure_dir(a.dir)
         pp = os.path.join(a.dir, "probes.jsonl")
         if os.path.exists(pp):
@@ -197,6 +205,10 @@ def cmd_manual(a):
                     "unedited under the matching marker in answers.md.\n\n")
             for i, p in enumerate(probes, 1):
                 f.write(f"{MARK_P.format(n=i)}\n{p.system}\n\n{p.prompt}\n\n")
+            credits = list({json.dumps(s, sort_keys=True): s for p in probes for s in p.meta.get("sources", [])}.values())
+            if credits:
+                f.write("## Source credits and reuse notices (keep with this file; do not paste into the chat)\n\n"
+                        + source_notice(credits) + "\n")
         with open(os.path.join(a.dir, "answers.md"), "w", encoding="utf-8") as f:
             f.write("".join(f"{MARK_A.format(n=i)}\n\n\n" for i in range(1, len(probes) + 1)))
         print(f"{len(probes)} prompts -> {a.dir}/prompts.md; fill {a.dir}/answers.md, then: "
@@ -231,6 +243,7 @@ def cmd_mink(a):
         control += score_document(prov, mid, open(path, encoding="utf-8").read(), os.path.basename(path), "control", a.chunk_words, a.max_chunks)
     rep = summarise_mink(target, control)
     rep["model"], rep["doc"], rep["controls"] = a.model, a.doc, a.control
+    rep["sources"] = [s for path in [a.doc, *a.control] for s in read_sources(path)]
     run_dir = a.run_dir or os.path.join("results", f"mink_{time.strftime('%Y%m%d-%H%M%S')}")
     ensure_dir(run_dir)
     with open(os.path.join(run_dir, "mink.json"), "w") as f:

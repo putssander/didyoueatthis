@@ -5,7 +5,9 @@ const path = require('node:path');
 const { JSDOM, VirtualConsole } = require('jsdom');
 const core = require('../docs/core.js');
 const root = path.resolve(__dirname, '..');
-function page(fetchImpl = async () => { throw new Error('Unexpected network request'); }) {
+const wikiText=Array.from({length:6},(_,i)=>Array.from({length:110},(_,j)=>`science${i}word${j}`).join(' ')).join('\n\n');
+const wikiResponse=()=>({ok:true,json:async()=>({query:{pages:{'123':{pageid:123,title:'Photosynthesis',lastrevid:456,extract:wikiText}}}})});
+function page(fetchImpl = async (url) => { if(url.includes('en.wikipedia.org'))return wikiResponse(); throw new Error('Unexpected network request'); }) {
   const errors = [], virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', error => errors.push(error));
   let html = fs.readFileSync(path.join(root, 'docs/index.html'), 'utf8').replace(/<script[^>]+src=[\s\S]*?<\/script>/g, '');
@@ -16,7 +18,7 @@ function page(fetchImpl = async () => { throw new Error('Unexpected network requ
   });
   assert.equal(errors.length, 0, errors.map(e=>e.message).join('\n'));
   const $ = id => dom.window.document.getElementById(id);
-  const input = (id,value) => { $(id).value = value; $(id).dispatchEvent(new dom.window.Event('input',{bubbles:true})); };
+  const input = (id,value) => { if(['doc','ctrl'].includes(id)) $('rights-basis').value='own'; /* synthetic fixtures owned by the test */ $(id).value = value; $(id).dispatchEvent(new dom.window.Event('input',{bubbles:true})); };
   return {dom,$,input,errors};
 }
 const tick = () => new Promise(resolve=>setImmediate(resolve));
@@ -125,4 +127,29 @@ test('provider requests have appropriate budgets and never score Gemini thought 
 test('Wikipedia failures preserve a pasted control and remembered keys can be removed',async()=>{
   const {dom,$,input}=page(async()=>{throw new Error('offline');});input('ctrl','my existing control');$('load_fresh').click();await tick();assert.equal($('ctrl').value,'my existing control');assert.match($('fresh_hint').textContent,/existing control was kept/);
   input('k_openai','dummy');$('remember').click();assert.equal(dom.window.localStorage.getItem('didyoueatthis_key_openai'),'dummy');$('forget').click();assert.equal(dom.window.localStorage.getItem('didyoueatthis_key_openai'),null);assert.equal($('k_openai').value,'');dom.window.close();
+});
+
+test('custom text needs a declared rights basis and open-licensed text needs attribution',()=>{
+  const {dom,$,input}=page();input('doc',wordText);$('rights-basis').value='';$('go').click();
+  assert.match($('status').textContent,/Choose a rights basis/);assert.equal($('manualbox').hidden,true);
+  $('rights-basis').value='open';$('go').click();assert.match($('status').textContent,/Add source, author and licence/);
+  input('source-notes','Example by Test Author; https://example.test/source; CC BY 4.0 https://creativecommons.org/licenses/by/4.0/');$('go').click();
+  assert.equal($('manualbox').hidden,false);assert.doesNotMatch($('current-prompt').value,/Test Author/);
+  const copied=[];Object.defineProperty(dom.window.navigator,'clipboard',{value:{writeText:async t=>copied.push(t)}});$('copyall').click();
+  return new Promise(r=>setTimeout(r,0)).then(()=>{assert.match(copied[0],/Test Author/);assert.match(copied[0],/do not paste into the chat/);dom.window.close();});
+});
+
+test('Wikipedia credits survive single/bulk prompts, reports and user edits',async()=>{
+  const {dom,$,input}=page();$('quick').click();await tick();
+  assert.match($('doc-sources').textContent,/Wikipedia contributors/);assert.doesNotMatch($('current-prompt').value,/CC BY-SA 4.0|curid=123/);
+  const copied=[];Object.defineProperty(dom.window.navigator,'clipboard',{value:{writeText:async t=>copied.push(t)}});$('copyall').click();await tick();assert.match(copied[0],/creativecommons.org\/licenses\/by-sa\/4.0/);
+  input('current-answer','[UNKNOWN]');$('scoremanual').click();assert.match($('result').textContent,/Source credits and reuse notices/);
+  const blobs=[];dom.window.URL.createObjectURL=blob=>{blobs.push(blob);return 'blob:test';};dom.window.URL.revokeObjectURL=()=>{};dom.window.HTMLAnchorElement.prototype.click=()=>{};$('dl').click();
+  const content=await new Promise(resolve=>{const reader=new dom.window.FileReader();reader.onload=()=>resolve(reader.result);reader.readAsText(blobs[0]);});const report=JSON.parse(content);
+  assert.equal(report.settings.sources.doc[0].revision_observed,456);assert.match(report.reuse_notice,/CC BY-SA/);
+  input('doc',$('doc').value+' New words.');$('rights-basis').value='';$('go').click();assert.match($('status').textContent,/rights basis/);assert.match($('doc-sources').textContent,/Wikipedia contributors/);assert.match($('doc-sources').textContent,/Edited by the user/);dom.window.close();
+});
+
+test('Wikipedia fetch failures do not replace the target or start a run',async()=>{
+  const {dom,$,input}=page(async()=>{throw new Error('offline');});input('doc',wordText);$('quick').click();await tick();assert.equal($('doc').value,wordText);assert.equal($('manualbox').hidden,true);assert.equal($('quick').disabled,false);assert.match($('status').textContent,/existing text was kept/);dom.window.close();
 });

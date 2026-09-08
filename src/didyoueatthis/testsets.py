@@ -1,25 +1,10 @@
-"""Calibration test sets: documents and tables whose exposure status is known.
+"""Candidate calibration texts and tables; exposure is not independently known.
 
-Before trusting a verdict on your own document, run the same procedure on
-material where the answer is known.  Three kinds are needed, and only the
-first two can be fetched automatically:
-
-known-positive   text that is certainly in every web-scale corpus *and* heavily
-                 duplicated, so a chat model reproduces it despite tuning:
-                 public-domain classics (Project Gutenberg) and the most-copied
-                 teaching tables (Titanic).  Expected: ``strong_memorization``.
-known-negative   text that did not exist when the model was trained: Wikipedia
-                 articles created in the last days (fetched live from the API).
-                 Expected: ``no_signal``.  These are also the best matched
-                 *controls* for a Wikipedia-like target.
-your own         unpublished writing of yours: the cleanest negative there is,
-                 and the only one whose status you can be certain of.
-
-Published membership-inference benchmarks (WikiMIA, BookMIA, MIMIR) are
-deliberately not wired in: they were released in 2023-2024 and are themselves
-inside the corpora of every model trained since, so their "non-member"
-halves are not non-members for a 2026 model.  docs/04-test-sets.md
-discusses this.
+Classic novels are plausible positive references. Recently created Wikipedia
+articles are comparison candidates, not guaranteed unseen wording. Match
+controls to the target and inspect replies. Fetches retain source notices;
+see docs/07-copyright.md for reuse conditions and docs/04-test-sets.md for
+experimental limitations.
 """
 
 from __future__ import annotations
@@ -34,6 +19,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Callable
+
+from .core.sources import CC_BY_SA, write_sources
 
 GUTENBERG = {
     "pride-and-prejudice": 1342,
@@ -78,6 +65,12 @@ def fetch_gutenberg(dest: str) -> list[str]:
             raw = _get(f"https://www.gutenberg.org/cache/epub/{gid}/pg{gid}.txt").decode("utf-8", "replace")
             with open(p, "w", encoding="utf-8") as f:
                 f.write(strip_gutenberg(raw))
+        write_sources(p, [{"title": name.replace("-", " ").title(),
+            "author": {1342: "Jane Austen", 2701: "Herman Melville", 11: "Lewis Carroll", 84: "Mary Shelley"}[gid],
+            "url": f"https://www.gutenberg.org/ebooks/{gid}",
+            "license": "Original nineteenth-century novel; verify public-domain status and edition rights in your jurisdiction.",
+            "changes": "Book text extracted; source header/footer excluded from probes; excerpts and masks may follow.",
+            "notice": "Source terms and edition information: https://www.gutenberg.org/policy/permission.html"}])
         out.append(p)
     return out
 
@@ -89,8 +82,9 @@ def fetch_fresh_wiki(dest: str, n_articles: int = 12, min_words: int = 400, max_
     reader can check it postdates the model's cutoff.
     """
     os.makedirs(dest, exist_ok=True)
-    # Articles fetched earlier today are reused; only the shortfall is fetched (delete the folder to refresh).
-    out: list[str] = sorted(os.path.join(dest, f) for f in os.listdir(dest) if f.endswith(".txt"))
+    # Reuse attributed cache files only. Legacy files without provenance are left on disk, but not selected.
+    out: list[str] = sorted(os.path.join(dest, f) for f in os.listdir(dest)
+                            if f.endswith(".txt") and os.path.exists(os.path.join(dest, f) + ".sources.json"))
     have = {os.path.basename(f) for f in out}
     cont = ""
     scanned = 0
@@ -112,7 +106,7 @@ def fetch_fresh_wiki(dest: str, n_articles: int = 12, min_words: int = 400, max_
         extracted: dict[str, dict] = {}
         for i in range(0, len(pages), 20):
             ids = "|".join(str(p["pageid"]) for p in pages[i:i + 20])
-            q2 = {"action": "query", "prop": "extracts", "explaintext": "1", "exlimit": "20", "pageids": ids,
+            q2 = {"action": "query", "prop": "extracts|info", "explaintext": "1", "exlimit": "20", "pageids": ids,
                   "maxlag": "5", "format": "json"}
             time.sleep(2.0)  # be polite to the API; TextExtracts is expensive server-side
             try:
@@ -135,6 +129,15 @@ def fetch_fresh_wiki(dest: str, n_articles: int = 12, min_words: int = 400, max_
             p = os.path.join(dest, f"{ts}_{slug}.txt")
             with open(p, "w", encoding="utf-8") as f:
                 f.write(f"{page['title']}\n\n{clean_wiki(text)}")
+            write_sources(p, [{
+                "title": page["title"], "author": "Wikipedia contributors",
+                "url": f"https://en.wikipedia.org/?curid={page['pageid']}",
+                "history_url": f"https://en.wikipedia.org/w/index.php?curid={page['pageid']}&action=history",
+                "revision_observed": page.get("lastrevid"), "retrieved": time.strftime("%Y-%m-%d"),
+                "license": "CC BY-SA 4.0", "license_url": CC_BY_SA,
+                "changes": "Plain-text extraction; section headings removed; excerpts, masked names and paraphrases are adaptations offered under CC BY-SA 4.0.",
+                "notice": "Check third-party quotations and special notices separately. No Wikimedia endorsement.",
+            }])
             out.append(p)
             if len(out) >= n_articles:
                 break
@@ -170,9 +173,9 @@ class TestSet:
 
 SETS: dict[str, TestSet] = {
     "gutenberg": TestSet("gutenberg", "text", "strong_memorization", fetch_gutenberg,
-                         "Four public-domain novels. Present in every corpus, duplicated thousands of times."),
+                         "Four nineteenth-century novels; plausible positive references. Check local public-domain and edition rights."),
     "fresh-wiki": TestSet("fresh-wiki", "text", "no_signal", fetch_fresh_wiki,
-                          "Wikipedia articles created in the last days: cannot be in any model trained before today."),
+                          "Recent Wikipedia articles with attribution; wording may reuse older sources. Not guaranteed unseen."),
     "titanic": TestSet("titanic", "csv", "strong_memorization", fetch_titanic,
                        "The Kaggle Titanic table, copied into countless repositories and notebooks."),
 }
