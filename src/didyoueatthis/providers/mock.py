@@ -24,6 +24,7 @@ class MockProvider(Provider):
         super().__init__()
         self.memorised_tiers = set(memorised_tiers)
         self.memorised_ids = memorised_ids or set()
+        self.memorised_texts: list[str] = []
         self.recall_prob = recall_prob
         self.rng = random.Random(seed)
 
@@ -34,7 +35,20 @@ class MockProvider(Provider):
             return Response(probe_id=probe.id, model=model, text=probe.truth)
         if model.endswith("-refuser"):
             return Response(probe_id=probe.id, model=model, text="", refused=True)
+        if probe.family == "mcq":
+            return Response(probe_id=probe.id, model=model, text=rng.choice("ABCD"))
+        if probe.family == "mcq_gen":  # a "paraphrase": same words, shuffled
+            toks = probe.prompt.rsplit("\n\n", 1)[-1].split()
+            rng.shuffle(toks)
+            return Response(probe_id=probe.id, model=model, text=" ".join(toks))
         return Response(probe_id=probe.id, model=model, text=wrong_answer(probe.truth, rng))
+
+    def logprobs_of(self, model: str, text: str) -> list[tuple[str, float | None]]:
+        """Memorised docs (those in `memorised_texts`) get high, flat log-probs; others get a few very low tokens."""
+        rng = random.Random(text[:50])
+        seen = any(text[:60] in t for t in self.memorised_texts)
+        toks = text.split()
+        return [(t, None if i == 0 else (rng.uniform(-1.5, -0.2) if seen else rng.uniform(-6.0, -0.2))) for i, t in enumerate(toks)]
 
 
 def wrong_answer(truth: str, rng: random.Random) -> str:

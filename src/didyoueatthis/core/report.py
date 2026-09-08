@@ -13,8 +13,11 @@ from typing import Any
 from .scoring import VERDICTS, Score, TierSummary, summarise_tier, verdict
 
 # Which tier is the question and which is the chance baseline, per family.
-TARGET_TIER = {"text": "target", "csv": "target"}
-CONTROL_TIER = {"text": "control", "csv": "synthetic"}
+TARGET_TIER = {"text": "target", "csv": "target", "cloze": "target", "mcq": "target"}
+CONTROL_TIER = {"text": "control", "csv": "synthetic", "cloze": "control", "mcq": "control"}
+CHANCE = {"mcq": 0.25}
+FAMILY_LABEL = {"text": "verbatim continuation", "csv": "row continuation", "cloze": "name cloze",
+                "mcq": "multiple choice (DE-COP)"}
 TIER_ORDER = ["target", "paraphrase", "control", "synthetic"]
 
 
@@ -38,11 +41,11 @@ def build_report(scores: list[Score], meta: dict[str, Any] | None = None) -> dic
         tiers = {t: summarise_tier(t, [s for s in ss if s.tier == t]) for t in sorted({s.tier for s in ss})}
         target = tiers.get(TARGET_TIER[family])
         control = tiers.get(CONTROL_TIER[family])
-        v = verdict(target, control) if target else "inconclusive"
+        v = verdict(target, control, chance=CHANCE.get(family, 0.0)) if target else "inconclusive"
         # Secondary breakdowns: by context rows (csv) or prefix length (text).
         breakdown: dict[str, dict[str, Any]] = {}
-        key = "context_rows" if family == "csv" else "prefix_words"
-        for t, tss in tiers.items():
+        key = {"csv": "context_rows", "text": "prefix_words"}.get(family)
+        for t, tss in (tiers.items() if key else []):
             for val in sorted({str(s.meta.get(key)) for s in ss if s.tier == t}, key=lambda x: (len(x), x)):
                 sub = [s for s in ss if s.tier == t and str(s.meta.get(key)) == val]
                 breakdown.setdefault(t, {})[val] = _tier_dict(summarise_tier(t, sub))
@@ -52,7 +55,8 @@ def build_report(scores: list[Score], meta: dict[str, Any] | None = None) -> dic
                 for s in ss if s.hit]
         hit_groups = sorted({(h["tier"], h["group"]) for h in hits})
         out["models"].setdefault(model, {})[family] = {
-            "verdict": v, "verdict_text": VERDICTS[v],
+            "verdict": v, "verdict_text": VERDICTS[v], "method": FAMILY_LABEL.get(family, family),
+            "chance": CHANCE.get(family, 0.0),
             "target_tier": TARGET_TIER[family], "control_tier": CONTROL_TIER[family],
             "tiers": {t: _tier_dict(s) for t, s in tiers.items()},
             "breakdown_key": key, "breakdown": breakdown, "hits": hits,
@@ -71,7 +75,7 @@ def to_markdown(rep: dict[str, Any]) -> str:
         lines.append("")
     for model, fams in rep["models"].items():
         for family, r in fams.items():
-            lines.append(f"## {model} — {family}\n")
+            lines.append(f"## {model} — {r['method']}" + (f" (chance {r['chance']:.2f})" if r["chance"] else "") + "\n")
             lines.append(f"**Verdict: `{r['verdict']}`** — {r['verdict_text']}\n")
             lines.append("| tier | groups | hit groups | rate [95% CI] | probe hits / n | null rate | unknown | refused/err | blocked | mean exact-prefix words | longest run | mean sim |")
             lines.append("|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|")
@@ -81,17 +85,20 @@ def to_markdown(rep: dict[str, Any]) -> str:
                              f"{s['hit_probes']}/{s['n_probes']} | {s['null_rate']:.2f} | {s['unknown']} | {s['refused']} | {s['blocked']} | "
                              f"{s['mean_exact_prefix']:.1f} | {s['max_longest_run']} | {s['mean_sim']:.2f} |")
             lines.append("")
-            lines.append(f"Breakdown by `{r['breakdown_key']}` (hit groups / groups):\n")
-            keys = sorted({k for t in r["breakdown"].values() for k in t}, key=lambda x: (len(x), x))
-            lines.append("| tier | " + " | ".join(keys) + " |")
-            lines.append("|---|" + "---:|" * len(keys))
-            for t in sorted(r["breakdown"], key=lambda t: TIER_ORDER.index(t) if t in TIER_ORDER else 99):
-                cells = []
-                for k in keys:
-                    s = r["breakdown"][t].get(k)
-                    cells.append(f"{s['hit_groups']}/{s['n_groups']}" if s else "–")
-                lines.append(f"| {t} | " + " | ".join(cells) + " |")
-            lines.append("")
+            if not r["breakdown_key"]:
+                lines.append("")
+            else:
+                lines.append(f"Breakdown by `{r['breakdown_key']}` (hit groups / groups):\n")
+                keys = sorted({k for t in r["breakdown"].values() for k in t}, key=lambda x: (len(x), x))
+                lines.append("| tier | " + " | ".join(keys) + " |")
+                lines.append("|---|" + "---:|" * len(keys))
+                for t in sorted(r["breakdown"], key=lambda t: TIER_ORDER.index(t) if t in TIER_ORDER else 99):
+                    cells = []
+                    for k in keys:
+                        s = r["breakdown"][t].get(k)
+                        cells.append(f"{s['hit_groups']}/{s['n_groups']}" if s else "–")
+                    lines.append(f"| {t} | " + " | ".join(cells) + " |")
+                lines.append("")
             if r["hits"]:
                 hg = r["hit_groups"]
                 lines.append(f"{len(r['hits'])} exact hits in {len(hg)} groups (probe ids in `scores.jsonl`): " +

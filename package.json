@@ -1,0 +1,6 @@
+{
+  "name": "didyoueatthis-page-checks",
+  "private": true,
+  "scripts": { "test": "node --test tests/page.test.cjs" },
+  "devDependencies": { "jsdom": "^26.1.0" }
+}

@@ -36,6 +36,11 @@ class Provider(ABC):
     @abstractmethod
     def _call(self, model: str, probe: Probe) -> Response: ...
 
+    def logprobs_of(self, model: str, text: str) -> list[tuple[str, float | None]]:
+        """Token log-probabilities of a *given* text (for Min-K%). Only endpoints that
+        can echo a scored prompt support this; the default says so."""
+        raise NotImplementedError(f"provider '{self.prefix}' cannot score a given text (no echo/logprobs endpoint)")
+
     def complete(self, model: str, probe: Probe) -> Response:
         t0 = time.time()
         try:

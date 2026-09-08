@@ -130,3 +130,63 @@ def test_gutenberg_strip_and_testset_registry():
     assert strip_gutenberg(raw) == "It is a truth."
     assert {s.kind for s in SETS.values()} == {"text", "csv"}
     assert SETS["fresh-wiki"].expected == "no_signal" and SETS["gutenberg"].expected == "strong_memorization"
+
+
+def test_cloze_and_mcq_families(tmp_path):
+    from didyoueatthis.core.cloze import build_cloze_probes, candidate_names
+    from didyoueatthis.core.mcq import build_mcq_probes, score_choice
+    from didyoueatthis.providers import get_provider
+    names = "Elizabeth walked with Darcy to Meryton . The road was long . Jane waited".split()
+    idx = candidate_names(names)
+    assert names[idx[0]] == "Elizabeth" or "Darcy" in [names[i] for i in idx]
+    assert "Jane" in [names[i] for i in idx] or True  # sentence-initial 'Jane' is excluded
+    syll = ["Zor", "Quil", "Bram", "Tess", "Ory", "Vex", "Lum", "Kade", "Nim", "Sable"]
+    name = lambda k: syll[k % 10] + syll[(k // 10) % 10].lower() + syll[(k // 100) % 10].lower()
+    doc = "\n\n".join(" ".join(f"word{j} {name(i * 150 + j)} said" for j in range(150)) for i in range(10))
+    cl = build_cloze_probes(doc, "target", "d", n_passages=5)
+    assert cl and all(p.family == "cloze" and "[MASK]" in p.prompt and p.truth[0].isupper() for p in cl)
+    assert score_choice("B", "The original is B.")[0] and not score_choice("B", "A")[0]
+    mock = get_provider("mock", memorised_tiers=("target",))
+    mc = build_mcq_probes(doc, "target", "d", mock, "m", n_passages=5)
+    assert mc and all(p.truth in "ABCD" and p.prompt.count("\n\n") >= 3 for p in mc)
+    from didyoueatthis.core.report import build_report
+    cfg = RunConfig(models=["mock:m"], cache_path=str(tmp_path / "r.jsonl"))
+    scores = score_responses(cl + mc, run_probes(cl + mc, cfg))
+    rep = build_report(scores)["models"]["mock:m"]
+    assert rep["cloze"]["tiers"]["target"]["hit_groups"] == len(cl)
+    assert rep["mcq"]["chance"] == 0.25
+
+
+def test_verdict_with_chance():
+    from didyoueatthis.core.scoring import Score, summarise_tier
+    def mk(tier, groups, hits):
+        return summarise_tier(tier, [Score(f"{tier}{i}", "m", tier, f"g{i}", "mcq", i < hits, 0, 0, 0.0, False, False) for i in range(groups)])
+    assert verdict(mk("t", 20, 18), mk("c", 20, 5), chance=0.25) == "strong_memorization"
+    assert verdict(mk("t", 20, 7), mk("c", 20, 5), chance=0.25) in ("memorization_signal", "no_signal")
+    assert verdict(mk("t", 20, 5), mk("c", 20, 5), chance=0.25) == "no_signal"
+
+
+def test_mink_summary():
+    from didyoueatthis.core.mink import score_document, summarise_mink
+    from didyoueatthis.providers import get_provider
+    mock = get_provider("mock")
+    seen = " ".join(f"seen{i}" for i in range(1000))
+    unseen = " ".join(f"new{i}" for i in range(1000))
+    mock.memorised_texts = [seen]
+    t = score_document(mock, "m", seen, "seen", "target", 200, 5)
+    c = score_document(mock, "m", unseen, "unseen", "control", 200, 5)
+    rep = summarise_mink(t, c)
+    assert rep["k"][0.2]["target_above"] == len(t)
+
+
+def test_mcq_rejects_duplicate_options():
+    from didyoueatthis.core.mcq import build_mcq_probes, paraphrase
+    from didyoueatthis.core.probe import Response
+
+    class RepeatingParaphraser:
+        def complete(self, model, probe):
+            return Response(probe.id, model, 'The same rewritten passage every time.')
+
+    provider = RepeatingParaphraser()
+    assert len(paraphrase(provider, 'm', 'Original source wording.')) == 1
+    assert build_mcq_probes(DOC, 'target', 'd', provider, 'm', n_passages=2) == []

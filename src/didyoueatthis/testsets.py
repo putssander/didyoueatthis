@@ -134,7 +134,7 @@ def fetch_fresh_wiki(dest: str, n_articles: int = 12, min_words: int = 400, max_
                 continue
             p = os.path.join(dest, f"{ts}_{slug}.txt")
             with open(p, "w", encoding="utf-8") as f:
-                f.write(f"{page['title']}\n\n{text}")
+                f.write(f"{page['title']}\n\n{clean_wiki(text)}")
             out.append(p)
             if len(out) >= n_articles:
                 break
@@ -142,6 +142,12 @@ def fetch_fresh_wiki(dest: str, n_articles: int = 12, min_words: int = 400, max_
         if not cont:
             break
     return out
+
+
+def clean_wiki(text: str) -> str:
+    """Drop '== Section ==' markers (they are trivially guessable cloze answers) and empty sections."""
+    text = re.sub(r"^\s*=+\s*[^=\n]+?\s*=+\s*$", "", text, flags=re.M)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def fetch_titanic(dest: str) -> list[str]:

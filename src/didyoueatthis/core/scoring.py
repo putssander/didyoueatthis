@@ -193,7 +193,8 @@ VERDICTS = {
 }
 
 
-def verdict(target: TierSummary, control: TierSummary | None, min_strong_groups: int = 3) -> str:
+def verdict(target: TierSummary, control: TierSummary | None, min_strong_groups: int = 3,
+            chance: float = 0.0) -> str:
     """Map a target/control pair to an evidence category.
 
     Rules, in order:
@@ -203,10 +204,25 @@ def verdict(target: TierSummary, control: TierSummary | None, min_strong_groups:
     3. >= 1 hit group and (no control hits or target rate above control upper bound)
        -> signal
     4. otherwise -> no_signal
+
+    `chance` is the guessing rate of the task (0.25 for four-way multiple
+    choice).  For such tasks a hit is only evidence in aggregate: rule 2 then
+    requires the target CI lower bound to clear both the control CI upper
+    bound and `chance`, and rule 3 requires the target rate to exceed both.
     """
     if target.n_groups < 5 or target.refused >= target.n_probes:
         return "inconclusive"
     t_lo, _ = target.ci
+    if chance > 0:
+        if control is None or control.n_groups == 0:
+            c_hi = chance
+        else:
+            c_hi = max(control.ci[1], chance)
+        if t_lo > c_hi and target.hit_groups >= min_strong_groups:
+            return "strong_memorization"
+        if target.rate > c_hi:
+            return "memorization_signal"
+        return "no_signal"
     if control is None or control.n_groups == 0:
         c_hi = 1.0 if control is None else 0.0
         c_hits = 0

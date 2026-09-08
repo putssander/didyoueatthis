@@ -3,87 +3,50 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>didyoueatthis · did the model eat your document?</title>
-<!--
-  Static, no-backend client for the didyoueatthis document test.
-  Everything runs in the browser: passage selection, prompting, scoring, statistics.
-  Your API key goes from this page straight to the vendor (OpenAI / Anthropic / Google);
-  it is kept in localStorage only if you tick "remember". Nothing is proxied or logged.
-  The grading rules are the same as src/didyoueatthis/core/scoring.py; see docs/01-design.md.
--->
-<style>
-  :root { --bg:#fafaf7; --fg:#1c1c1a; --muted:#6b6b66; --line:#d9d9d4; --ok:#1d7a46; --warn:#b3640c; --bad:#a32b2b; --card:#fff; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#161615; --fg:#ececea; --muted:#a0a09a; --line:#333; --card:#1f1f1e; } }
-  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
-  main { max-width:1000px; margin:0 auto; padding:24px 20px 60px; }
-  h1 { font-size:22px; margin:0 0 4px; } h2 { font-size:17px; margin:26px 0 8px; } .sub { color:var(--muted); margin:0 0 18px; }
-  textarea, input, select { width:100%; box-sizing:border-box; background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:8px; font:inherit; }
-  textarea { min-height:170px; font-family:ui-monospace, monospace; font-size:13px; }
-  label { display:block; font-weight:600; margin:12px 0 4px; } .hint { color:var(--muted); font-weight:400; font-size:13px; }
-  .row { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px,1fr)); gap:12px; }
-  button { background:var(--fg); color:var(--bg); border:0; border-radius:6px; padding:10px 18px; font:inherit; font-weight:600; cursor:pointer; margin-top:16px; }
-  button.sec { background:transparent; color:var(--fg); border:1px solid var(--line); } button:disabled { opacity:.5; cursor:default; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px; margin-top:18px; }
-  .verdict { font-size:18px; font-weight:700; } .v-strong { color:var(--bad); } .v-signal { color:var(--warn); } .v-none { color:var(--ok); } .v-inc { color:var(--muted); }
-  table { border-collapse:collapse; width:100%; font-size:13px; margin-top:10px; } th, td { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; } td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
-  .wrap { overflow-x:auto; } pre { white-space:pre-wrap; font-size:12px; background:var(--bg); padding:8px; border-radius:6px; margin:6px 0; }
-  details { margin-top:10px; } summary { cursor:pointer; }
-  .models label { font-weight:400; display:inline-flex; gap:6px; align-items:center; margin:4px 14px 4px 0; }
-  progress { width:100%; height:10px; } .warn { color:var(--warn); } .small { font-size:13px; }
-</style>
+<meta name="description" content="Test whether an AI model can reproduce your text. Try a public-domain example, copy prompts into your favourite chat, and compare the answers locally. No account required.">
+<meta name="theme-color" content="#245c42">
+<title>didyoueatthis — Does AI remember your text?</title>
+<link rel="stylesheet" href="style.css">
+<script src="core.js" defer></script>
+<script src="app.js" defer></script>
 </head>
 <body>
+<div class="shell">
+<header class="topbar"><a class="brand" href="#"><span>dyet</span>didyoueatthis</a><nav class="nav" aria-label="Main navigation"><a href="#test">Try it</a><a href="#how">How it works</a><a href="https://github.com/putssander/didyoueatthis">GitHub ↗</a></nav></header>
 <main>
-  <h1>didyoueatthis</h1><p class="sub" style="margin:0 0 6px;font-style:italic">Did a language model eat your document? Ask it to spit it back out.</p>
-  <p class="sub">Does a model reproduce this document verbatim? Passages are cut into a prefix and a hidden suffix; the models are asked to continue verbatim at several prefix lengths; exact reproduction that a matched control does not show is graded as memorisation evidence. This does not prove training-set membership, and <em>no signal</em> is not evidence of absence. Grading rules: <a href="https://github.com/putssander/didyoueatthis/blob/main/docs/01-design.md">docs/01-design.md</a>.</p>
-
-  <h2>1. Keys <span class="hint">(sent from your browser to the vendor only)</span></h2>
-  <label class="small" style="font-weight:600"><input type="checkbox" id="manual" style="width:auto"> Manual mode: no key. Generate prompts to paste into a chat UI (ChatGPT, Claude, Gemini, …), paste the answers back, score locally.</label>
-  <div class="row">
-    <div><label>OpenAI</label><input id="k_openai" type="password" placeholder="sk-…"></div>
-    <div><label>Anthropic</label><input id="k_anthropic" type="password" placeholder="sk-ant-…"></div>
-    <div><label>Google Gemini</label><input id="k_google" type="password" placeholder="AIza…"></div>
-  </div>
-  <label class="small" style="font-weight:400"><input type="checkbox" id="remember" style="width:auto"> remember keys in this browser (localStorage) &nbsp; <button class="sec" id="forget" style="margin:0;padding:4px 10px">forget</button></label>
-
-  <h2>2. Documents</h2>
-  <label>Document under test <span class="hint">(a few hundred words minimum; longer and more distinctive is better) · <input type="file" id="f_doc" accept=".txt,.md" style="width:auto;display:inline;padding:2px"></span></label>
-  <textarea id="doc" placeholder="Paste the document text here…"></textarea>
-  <p class="small"><button class="sec" id="load_pos" style="margin:6px 0 0;padding:6px 12px">Load a known positive</button> <span class="hint">Pride and Prejudice, ch. 1–3 (public domain, in every corpus): expected <em>strong memorization</em>. Run it first to check the model is answering at all.</span></p>
-  <label>Control document <span class="hint">(strongly recommended: same genre and length, written after the models' cutoff or otherwise certainly unseen) · <input type="file" id="f_ctrl" accept=".txt,.md" style="width:auto;display:inline;padding:2px"></span></label>
-  <textarea id="ctrl" style="min-height:100px" placeholder="Paste a matched control text here…"></textarea>
-  <p class="small"><button class="sec" id="load_fresh" style="margin:6px 0 0;padding:6px 12px">Fetch fresh Wikipedia articles as control</button> <span class="hint" id="fresh_hint">Articles created in the last days (live from the Wikipedia API): they cannot be in any current model. Good generic control for prose; see <a href="https://github.com/putssander/didyoueatthis/blob/main/docs/04-test-sets.md">docs/04-test-sets.md</a> for matching controls to targets.</span></p>
-
-  <h2>3. Models and settings</h2>
-  <div class="models" id="models"></div>
-  <input id="custom" placeholder="Add a model and press Enter: openai:gpt-5 · anthropic:claude-opus-5 · google:gemini-2.5-pro">
-  <div class="row">
-    <div><label>Passages <span class="hint">per document</span></label><input id="passages" type="number" value="12" min="3" max="60"></div>
-    <div><label>Prefix words <span class="hint">sweep</span></label><input id="prefix" value="16,32,64,128"></div>
-    <div><label>Suffix words <span class="hint">hidden target</span></label><input id="suffix" type="number" value="40" min="10" max="120"></div>
-    <div><label>Hit threshold <span class="hint">leading words exact</span></label><input id="hitw" type="number" value="20" min="5" max="120"></div>
-    <div><label>Concurrency</label><input id="conc" type="number" value="3" min="1" max="8"></div>
-  </div>
-  <label>Paraphrase tier <span class="hint">(optional: a model that rewrites each passage; reproducing the original but not the rewrite means the model knows the wording, not just the content)</span></label>
-  <input id="para" placeholder="e.g. openai:gpt-5 — empty to skip">
-
-  <button id="go">Run test</button> <button class="sec" id="dl" hidden>Download results (JSON)</button>
-  <div id="manualbox" class="card" hidden>
-    <h2 style="margin-top:0">Manual mode</h2>
-    <p class="small">Each prompt below is self-contained (the audit instruction is included). Paste one prompt per <em>new</em> chat so earlier answers do not leak into later ones, use the model's default settings, and paste the reply unedited. Prompts are numbered; you can paste all answers at once using the same <code>##### ANSWER n #####</code> markers.</p>
-    <div class="row">
-      <div><label>Label for this model <span class="hint">(appears in the report)</span></label><input id="mlabel" value="chatgpt-web"></div>
-      <div><label>&nbsp;</label><button class="sec" id="copyall" style="margin:0">Copy all prompts</button> <button class="sec" id="dlprompts" style="margin:0">Download prompts (.md)</button></div>
-    </div>
-    <label>Paste all answers <span class="hint">(optional bulk paste; rows below are filled from the markers)</span></label>
-    <textarea id="bulk" style="min-height:90px" placeholder="##### ANSWER 1 #####&#10;…&#10;##### ANSWER 2 #####&#10;…"></textarea>
-    <button class="sec" id="parsebulk">Fill rows from pasted block</button>
-    <div class="wrap"><table id="mtable"><tr><th>#</th><th>tier</th><th>prompt</th><th>answer</th></tr></table></div>
-    <button id="scoremanual">Score answers</button>
-  </div>
-  <div id="status" class="card" hidden></div>
-  <div id="result" hidden></div>
-</main>
+<section class="hero">
+<div><p class="eyebrow">An open experiment in AI memory</p><h1>Your words.<br>In a model’s <em>memory?</em></h1><p class="intro">Give an AI the beginning of a passage. See if it knows what comes next. Explore evidence of memorisation with a test you can inspect yourself.</p><div class="actions"><button id="quick">Try a book example <span aria-hidden="true">→</span></button><a class="button sec" href="#test">Test your own text</a></div><p class="micro">No sign-up. No API key needed. Your answers are scored here.</p></div>
+<div class="example" aria-label="Illustration of a continuation test, not a live model result"><p class="eyebrow">The idea in one sentence <span>01 / 03</span></p><blockquote>“It is a truth universally acknowledged, that a single man in possession of a good fortune <span class="mask">[what comes next?]</span>”</blockquote><div class="answer"><span>You show the beginning.</span><strong>We hold back the ending.</strong></div><p class="micro">Jane Austen · <em>Pride and Prejudice</em><br>Illustration only. A familiar quote is a starting point, not proof.</p></div>
+</section>
+<section class="steps" id="how" aria-label="How the test works"><div><div class="step-label"><span>01</span>Choose a text</div><p>Use your writing or start with a public-domain book.</p></div><div><div class="step-label"><span>02</span>Ask without showing the answer</div><p>Copy a prompt into a fresh chat, then paste its reply here.</p></div><div><div class="step-label"><span>03</span>Inspect the evidence</div><p>Compare exact matches with a separate control text.</p></div></section>
+<noscript><p class="notice error">Enable JavaScript to generate prompts and score replies. You can also use the Python CLI linked on GitHub.</p></noscript>
+<section id="test" class="workspace" aria-labelledby="test-title">
+<div class="section-head"><div><p class="eyebrow">The experiment</p><h2 id="test-title">Let’s put a model to the test.</h2><p class="hint">Start small. Every prompt and result is yours to inspect.</p></div><span class="tag">RUNS IN YOUR BROWSER</span></div>
+<fieldset class="mode-picker"><legend class="sr-only">How do you want to test?</legend><label class="mode"><input type="radio" id="manual" name="mode" checked><span><b>Copy &amp; paste</b><small>Use any AI chat. No API key.</small></span></label><label class="mode"><input type="radio" id="automatic" name="mode"><span><b>Use an API key</b><small>Run prompts automatically.</small></span></label></fieldset>
+<p id="manual-help" class="note">Use a <strong>new chat for each prompt</strong>, with web search, memory and connected files off. Don’t upload the document or paste the hidden answer into the chat. Your chat provider receives whatever you paste there.</p>
+<div id="api-panel" hidden><p class="note">Prompts go directly from this browser to your selected providers. API usage costs money; a chat subscription does not include API credit. Keys stay in memory unless you choose to remember them.</p><div class="row keys"><div><label for="k_openai">OpenAI key</label><input id="k_openai" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…"></div><div><label for="k_anthropic">Anthropic key</label><input id="k_anthropic" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…"></div><div><label for="k_google">Google Gemini key</label><input id="k_google" type="password" autocomplete="off" spellcheck="false" placeholder="AIza…"></div></div><label class="check"><input type="checkbox" id="remember">Remember keys on this device (localStorage)</label><button id="forget" class="sec small-button">Forget keys</button><p class="hint">Choose models</p><div id="models" class="models"></div><label for="custom">Add another model</label><div class="actions"><input id="custom" placeholder="provider:model-id, e.g. openai:gpt-5" style="flex:1;min-width:180px"><button id="add-model" class="sec">Add model</button></div><p id="model-feedback" class="hint" role="status"></p></div>
+<div class="row"><div><div class="document-top"><label for="doc">Your text</label><label class="upload" for="f_doc">Upload .txt / .md<input type="file" id="f_doc" accept=".txt,.md,text/plain,text/markdown"></label></div><textarea id="doc" placeholder="Paste a few hundred words or more. Distinctive passages work better than generic statements." aria-describedby="doc-count"></textarea><p id="doc-count" class="word-count">0 words</p><button class="sec small-button" id="load_pos">Load Pride and Prejudice</button></div><div><div class="document-top"><label for="ctrl">Control text <span class="hint">· recommended</span></label><label class="upload" for="f_ctrl">Upload .txt / .md<input type="file" id="f_ctrl" accept=".txt,.md,text/plain,text/markdown"></label></div><textarea id="ctrl" placeholder="Add comparable writing the model is unlikely to have seen. Match genre, style and length as closely as possible." aria-describedby="ctrl-count"></textarea><p id="ctrl-count" class="word-count">0 words</p><button class="sec small-button" id="load_fresh">Find recent Wikipedia text</button><p id="fresh_hint" class="hint">A convenient comparison, not a guaranteed unseen or genre-matched control. Unpublished writing is often better.</p></div></div>
+<div class="settings"><h3 class="method-title">What should the model try?</h3><div class="methods"><label class="check"><input type="checkbox" id="m_continuation" checked>Continue the passage</label><label class="check"><input type="checkbox" id="m_cloze">Fill in a missing name</label></div><p class="hint">Continuation checks exact wording. Name cloze asks for one hidden name; correct guesses can also come from context. English text works best.</p><details id="advanced"><summary>Adjust test size and scoring</summary><div class="settings-grid"><div><label for="passages">Passages per text</label><input id="passages" type="number" value="3" min="1" max="60"></div><div><label for="prefix">Prefix lengths (words)</label><input id="prefix" value="64"></div><div><label for="suffix">Hidden ending (words)</label><input id="suffix" type="number" value="40" min="10" max="120"></div><div><label for="hitw">Exact words for a hit</label><input id="hitw" type="number" value="20" min="5" max="120"></div><div><label for="conc">Parallel API requests</label><input id="conc" type="number" value="3" min="1" max="8"></div></div><p>A three-passage test is exploratory. Use at least five usable passages per text for a verdict; more passages and matched controls make comparisons more useful. Multiple prefix lengths share one hidden ending and count as one passage.</p><button id="full-settings" class="sec small-button">Use a fuller test (12 passages)</button><p>Need multiple choice, paraphrase controls, CSV tests or local-model probabilities? Use the <a href="https://github.com/putssander/didyoueatthis#quick-start">Python CLI</a>.</p></details></div>
+<p id="estimate" class="estimate" aria-live="polite">Add your text to prepare the test.</p><div class="actions"><button id="go">Create my prompts →</button><button id="stop" class="sec" hidden>Stop run</button></div>
+</section>
+<div id="status" class="notice" role="status" aria-live="polite" hidden></div>
+<section id="manualbox" class="manual-panel" aria-labelledby="manual-title" hidden>
+<p class="eyebrow">Copy → ask → paste</p><h2 id="manual-title">One prompt at a time.</h2><p class="hint">Copy the prompt, open a fresh chat, and paste its reply below. Repeat with the same model. Leave unanswered prompts blank; they are marked separately from wrong answers.</p><label for="mlabel">Which model are you testing?</label><input id="mlabel" value="My chat model" placeholder="e.g. ChatGPT — model name shown in your chat">
+<div class="actions"><a class="button sec small-button" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">Open ChatGPT ↗</a><a class="button sec small-button" href="https://claude.ai/new" target="_blank" rel="noopener noreferrer">Open Claude ↗</a><a class="button sec small-button" href="https://gemini.google.com/" target="_blank" rel="noopener noreferrer">Open Gemini ↗</a></div>
+<div class="progress-line"><strong id="prompt-position"></strong><span id="manual-count" role="status"></span></div><progress id="manual-progress" value="0" max="1" aria-label="Answers completed"></progress><p id="prompt-meta" class="prompt-meta"></p><label for="current-prompt">Prompt to copy</label><textarea id="current-prompt" class="prompt" readonly></textarea><button id="copy-prompt" class="small-button">Copy this prompt</button><span id="copy-feedback" class="hint" role="status"></span><label for="current-answer">The model’s reply</label><textarea id="current-answer" class="reply" placeholder="Paste the complete reply, including refusals or [UNKNOWN]."></textarea><div class="manual-nav"><div class="actions"><button class="sec" id="prev">← Previous</button><button class="sec" id="next">Next prompt →</button></div><button id="scoremanual">Score my answers</button></div>
+<details><summary>Export prompts or paste several answers</summary><p>Keep one prompt per fresh chat, even when exporting all prompts together.</p><div class="actions"><button class="sec small-button" id="copyall">Copy all prompts</button><button class="sec small-button" id="dlprompts">Download prompts (.md)</button></div><label for="bulk">Replies with numbered markers</label><textarea id="bulk" placeholder="##### ANSWER 1 #####&#10;First reply…&#10;##### ANSWER 2 #####&#10;Second reply…"></textarea><button class="sec small-button" id="parsebulk">Fill answers from this block</button><p id="bulk-feedback" class="hint" role="status"></p></details>
+</section>
+<section id="result" aria-label="Test results" hidden></section><button class="sec" id="dl" hidden style="margin-top:18px">Download results (.json)</button>
+<section class="reading" id="research"><p class="eyebrow">Understand the evidence</p><h2>A useful experiment. An honest limit.</h2><p class="intro">Exact recall can be evidence consistent with exposure. It cannot identify a training dataset, and a miss cannot show that your text was never used.</p><div class="reading-grid">
+<article class="reading-card"><span class="eyebrow">01 · Exact continuation</span><h3><a href="https://arxiv.org/abs/2202.07646">Quantifying Memorization ↗</a></h3><p>Carlini et al. · ICLR 2023. Studies how model size, duplication and prompt length affect extractable memorisation. The basis for testing several prefix lengths.</p></article>
+<article class="reading-card"><span class="eyebrow">02 · Missing names</span><h3><a href="https://aclanthology.org/2023.emnlp-main.453/">Speak, Memory ↗</a></h3><p>Chang et al. · EMNLP 2023. Probes book recall using missing names. This page uses a simplified name-selection heuristic; it is not a replication of the full study.</p></article>
+<article class="reading-card"><span class="eyebrow">03 · Beyond this page</span><h3><a href="https://arxiv.org/abs/2402.09910">DE-COP ↗</a> &amp; <a href="https://arxiv.org/abs/2310.16789">Min-K% ↗</a></h3><p>Duarte et al. and Shi et al. · 2024. Multiple choice among paraphrases, or scoring unlikely tokens. Experimental versions are available in the CLI; neither is a universal detector.</p></article>
+<article class="reading-card"><span class="eyebrow">04 · Read this before concluding</span><h3><a href="https://spylab.ai/blog/mia_position/">Why membership tests aren’t proof ↗</a></h3><p>Zhang, Das, Kamath &amp; Tramèr. A clear explanation of false positives and why a plausible control does not establish the true false-positive rate.</p></article>
+</div><p class="hint">Go deeper: <a href="https://github.com/putssander/didyoueatthis/blob/main/docs/06-techniques.md">the techniques guide and 2025–2026 research</a> · <a href="https://www.gutenberg.org/ebooks/1342">the example’s source at Project Gutenberg</a> · <a href="https://github.com/putssander/didyoueatthis#results-so-far-2026-09-08-minimal-calibration">our calibration notes</a>.</p>
+</section>
+<section class="faq" aria-label="Common questions"><h2>Before you read too much into a result.</h2><details><summary>What does a match actually mean?</summary><p>For continuation, the first 20 normalised words must match by default: case and much punctuation are ignored. For name cloze, the reply must be the missing name, allowing surrounding punctuation. A hit could reflect memorisation, predictable text, or information available in the chat. Inspect the actual answers and compare with matched control text. The page’s categories are exploratory heuristics, not calibrated probabilities of training membership.</p></details><details><summary>What if the model refuses or says “unknown”?</summary><p>A refusal, empty reply or API error cannot establish absence. Try the public-domain example to check that the model can answer this kind of question. Name cloze may elicit an answer when continuation does not, but a correct name can be inferred from context.</p></details><details><summary>What makes a good control?</summary><p>Use text with similar length, subject, era and predictability that you have good reason to believe was unavailable to the model. A newly created Wikipedia article can reuse older writing, and encyclopaedia prose is a poor match for a novel. The quick book example starts without a control; add a suitable one before drawing conclusions.</p></details><details><summary>Where do my documents and keys go?</summary><p>Passage selection and scoring happen in this page. There is no project backend or analytics. In copy-paste mode, your chat provider receives the prompts you paste. In API mode, selected passages go directly to the selected providers. Wikipedia is contacted only when you click its button. Documents and answers are not saved across reloads; download a report to keep them. Remembered keys are stored on this device until you click Forget keys.</p></details><details><summary>Is the August 2026 reasoning-trace leak the same thing?</summary><p>No. <a href="https://arxiv.org/abs/2608.09867">Stealing Reasoning Traces from Proprietary LLM APIs</a> concerns disclosure of reasoning traces and context data. That does not establish whether a document appeared in pretraining. This tool tests visible answers; it does not extract hidden reasoning.</p></details></section>
+</main><footer class="footer"><span>didyoueatthis · Open source. Inspectable evidence.</span><a href="https://github.com/putssander/didyoueatthis">Code, methods &amp; reproducibility ↗</a></footer>
+</div>
 
 <template id="pp_excerpt">It is a truth universally acknowledged, that a single man in possession of a good fortune must be in want of a wife.
 
@@ -234,200 +197,5 @@ The rest of the evening was spent in conjecturing how soon he would return Mr. B
 [Illustration]
 
 Not all that Mrs. Bennet, however, with the assistance of her five daughters, could ask on the subject, was sufficient to draw from her husband any satisfactory description of Mr. Bingley. They attacked him in various ways, with barefaced questions, ingenious suppositions, and distant surmises; but he eluded the skill of them all; and they were at last obliged to accept the second-hand intelligence of their neighbour, Lady Lucas. Her report was highly favourable. Sir William had been delighted with him. He was quite young, wonderfully handsome, extremely agreeable, and, to crown the whole, he meant to be at the next assembly with a large party. Nothing could be more delightful! To be fond of dancing was a certain step towards falling in love; and very lively hopes of Mr. Bingley’s heart were entertained.</template>
-<script>
-'use strict';
-const $ = id => document.getElementById(id);
-
-// ------------------------------------------------------------------ keys
-const KEYS = ['openai', 'anthropic', 'google'];
-try { KEYS.forEach(k => { const v = localStorage.getItem('didyoueatthis_key_' + k); if (v) { $('k_' + k).value = v; $('remember').checked = true; } }); } catch (e) {}
-function key(p) { return $('k_' + p).value.trim(); }
-function saveKeys() { try { KEYS.forEach(k => $('remember').checked ? localStorage.setItem('didyoueatthis_key_' + k, key(k)) : localStorage.removeItem('didyoueatthis_key_' + k)); } catch (e) {} }
-$('forget').onclick = () => { KEYS.forEach(k => { $('k_' + k).value = ''; }); $('remember').checked = false; saveKeys(); };
-$('load_pos').onclick = () => { $('doc').value = $('pp_excerpt').content.textContent.trim(); };
-$('load_fresh').onclick = async () => {
-  const btn = $('load_fresh'); btn.disabled = true; $('fresh_hint').textContent = 'Fetching…';
-  try {
-    const api = 'https://en.wikipedia.org/w/api.php?origin=*&format=json&';
-    let cont = '', docs = [], scanned = 0;
-    while (docs.length < 8 && scanned < 400) {
-      const rc = await (await fetch(api + 'action=query&list=recentchanges&rctype=new&rcnamespace=0&rcshow=!redirect&rclimit=50' + (cont ? '&rccontinue=' + encodeURIComponent(cont) : ''))).json();
-      const pages = rc.query.recentchanges; scanned += pages.length;
-      let extracted = [];
-      for (let i = 0; i < pages.length; i += 20) {   // TextExtracts returns at most 20 plain-text extracts per request
-        const ex = await (await fetch(api + 'action=query&prop=extracts&explaintext=1&exlimit=20&pageids=' + pages.slice(i, i + 20).map(p => p.pageid).join('|'))).json();
-        if (ex.query) extracted = extracted.concat(Object.values(ex.query.pages));
-      }
-      for (const pg of extracted) { const t = pg.extract || ''; if (t.split(/\s+/).length >= 400) { const ts = (pages.find(p => p.pageid === pg.pageid) || {}).timestamp || ''; docs.push(`${pg.title} (created ${ts.slice(0, 10)})\n\n${t}`); if (docs.length >= 8) break; } }
-      cont = rc.continue?.rccontinue || ''; if (!cont) break;
-    }
-    $('ctrl').value = docs.join('\n\n');
-    $('fresh_hint').textContent = `${docs.length} new articles loaded (${scanned} scanned). Expected verdict on these as a target: no signal.`;
-  } catch (e) { $('fresh_hint').textContent = 'Fetch failed: ' + e; }
-  btn.disabled = false;
-};
-$('f_doc').onchange = e => e.target.files[0]?.text().then(t => $('doc').value = t);
-$('f_ctrl').onchange = e => e.target.files[0]?.text().then(t => $('ctrl').value = t);
-
-// ------------------------------------------------------------------ models
-const SUGGESTED = ['openai:gpt-5', 'openai:gpt-4.1', 'anthropic:claude-opus-5', 'anthropic:claude-sonnet-5', 'google:gemini-2.5-pro', 'google:gemini-2.5-flash'];
-const chosen = new Set();
-function addModel(id, on) {
-  const l = document.createElement('label'); const c = document.createElement('input');
-  c.type = 'checkbox'; c.value = id; c.checked = on; c.style.width = 'auto'; if (on) chosen.add(id);
-  c.onchange = () => c.checked ? chosen.add(id) : chosen.delete(id);
-  l.append(c, document.createTextNode(id)); $('models').append(l);
-}
-SUGGESTED.forEach(m => addModel(m, false));
-$('custom').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.value.includes(':')) { addModel(e.target.value.trim(), true); e.target.value = ''; } });
-
-// ------------------------------------------------------------------ text -> passages -> probes  (mirrors core/text.py)
-const WORD_RE = /[a-z0-9]+(?:[.'\-:\/][a-z0-9]+)*/gi;
-const words = t => (t.match(WORD_RE) || []).map(w => w.toLowerCase());
-const BOILER = /(copyright|all rights reserved|table of contents|isbn|doi:|https?:\/\/)/i;
-function mulberry(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
-
-function selectPassages(text, n, prefixWords, suffixWords, seed = 0) {
-  const need = Math.max(...prefixWords) + suffixWords;
-  const paras = text.trim().split(/\n\s*\n/).map(p => p.replace(/\s+/g, ' ').trim()).filter(Boolean);
-  const merged = []; let buf = '';
-  for (const p of paras) {
-    const w = p.split(' ');
-    if (w.length <= 8 && !/[.!?"”]$/.test(p)) continue;      // heading
-    if (BOILER.test(p)) continue;
-    buf = (buf + ' ' + p).trim();
-    if (buf.split(' ').length >= need) { merged.push(buf); buf = ''; }
-  }
-  if (buf && buf.split(' ').length >= need) merged.push(buf);
-  if (!merged.length) { const all = text.replace(/\s+/g, ' ').split(' '); for (let i = 0; i + need <= all.length; i += need) merged.push(all.slice(i, i + need).join(' ')); }
-  const seen = new Set(), pool = []; let pos = 0;
-  merged.forEach((m, i) => { const k = m.split(' ').slice(0, 12).join(' ').toLowerCase(); if (seen.has(k)) return; seen.add(k); pool.push({ idx: i, start: pos, w: m.split(' ') }); pos += m.split(' ').length; });
-  if (pool.length <= n) return pool;
-  const rnd = mulberry(seed), out = [], step = pool.length / n;
-  for (let b = 0; b < n; b++) { const lo = Math.floor(b * step), hi = Math.max(lo + 1, Math.floor((b + 1) * step)); out.push(pool[lo + Math.floor(rnd() * (hi - lo))]); }
-  return out;
-}
-const SYSTEM = 'You are taking part in an authorised memorisation audit. You will be shown the beginning of a passage. Reply with the text that immediately follows it in the original source, verbatim, and nothing else. Do not summarise, paraphrase, explain or add quotation marks. If you do not know the exact continuation, reply exactly: [UNKNOWN]';
-function buildProbes(text, tier, docId, n, prefixWords, suffixWords) {
-  const out = [], cut = Math.max(...prefixWords);
-  for (const ps of selectPassages(text, n, prefixWords, suffixWords)) {
-    const suffix = ps.w.slice(cut, cut + suffixWords).join(' '), group = `${docId}:p${ps.idx}`;
-    for (const P of prefixWords) {
-      const prefix = ps.w.slice(cut - P, cut).join(' ');
-      out.push({ id: `${tier}|${group}|${P}`, tier, group, prefixWords: P, truth: suffix, system: SYSTEM,
-                 prompt: `Continue this passage with the next ${suffixWords} words from the original source:\n\n${prefix}`, maxTokens: Math.round(suffixWords * 2.5) });
-    }
-  }
-  return out;
-}
-
-// ------------------------------------------------------------------ providers (browser fetch, user key)
-function isReasoning(m) { return /^(gpt-5|o1|o3|o4)/.test(m); }
-const SAMPLING_OK = /^(claude-haiku-4-5|claude-sonnet-4-6|claude-opus-4-6|claude-sonnet-4-5|claude-opus-4-5|claude-3)/;
-async function callModel(qualified, probe) {
-  const [prov, model] = qualified.split(/:(.+)/);
-  const k = key(prov); if (!k) throw new Error(`no ${prov} key`);
-  let url, headers = { 'content-type': 'application/json' }, body;
-  if (prov === 'openai') {
-    url = 'https://api.openai.com/v1/chat/completions'; headers.authorization = 'Bearer ' + k;
-    body = { model, messages: [{ role: 'system', content: probe.system }, { role: 'user', content: probe.prompt }], max_completion_tokens: probe.maxTokens };
-    if (isReasoning(model)) body.reasoning_effort = 'minimal'; else { body.temperature = 0; body.seed = 0; }
-  } else if (prov === 'anthropic') {
-    url = 'https://api.anthropic.com/v1/messages';
-    Object.assign(headers, { 'x-api-key': k, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' });
-    body = { model, max_tokens: Math.max(probe.maxTokens, 64), system: probe.system, messages: [{ role: 'user', content: probe.prompt }], output_config: { effort: 'low' } };
-    if (SAMPLING_OK.test(model)) body.temperature = 0;
-  } else if (prov === 'google') {
-    url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(k)}`;
-    body = { system_instruction: { parts: [{ text: probe.system }] }, contents: [{ role: 'user', parts: [{ text: probe.prompt }] }],
-             generationConfig: { temperature: 0, maxOutputTokens: Math.max(probe.maxTokens, 64), ...(model.includes('flash') ? { thinkingConfig: { thinkingBudget: 0 } } : {}) } };
-  } else throw new Error('unknown provider ' + prov);
-  for (let attempt = 0; ; attempt++) {
-    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
-    if (r.status === 429 || r.status >= 500) { if (attempt >= 4) throw new Error(`HTTP ${r.status}`); await new Promise(res => setTimeout(res, 1500 * 2 ** attempt)); continue; }
-    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
-    const j = await r.json();
-    if (prov === 'openai') { const c = j.choices[0]; return { text: c.message.content || '', refused: c.finish_reason === 'content_filter' || !!c.message.refusal, meta: { finish_reason: c.finish_reason, fingerprint: j.system_fingerprint } }; }
-    if (prov === 'anthropic') return { text: (j.content || []).filter(b => b.type === 'text').map(b => b.text).join(''), refused: j.stop_reason === 'refusal', meta: { stop_reason: j.stop_reason } };
-    const cand = (j.candidates || [])[0]; const fr = cand?.finishReason || j.promptFeedback?.blockReason || '';
-    return { text: (cand?.content?.parts || []).map(p => p.text || '').join(''), refused: /SAFETY|BLOCK/.test(fr), meta: { finish_reason: fr } };
-  }
-}
-
-// ------------------------------------------------------------------ scoring  (mirrors core/scoring.py)
-const UNKNOWN = ['[unknown]', "i don't know", 'i do not know', 'cannot', "can't"];
-const looksUnknown = t => { t = t.trim().toLowerCase(); return t === '' || UNKNOWN.some(m => t.startsWith(m) || t === m); };
-function exactPrefix(a, b) { let n = 0; while (n < a.length && n < b.length && a[n] === b[n]) n++; return n; }
-function longestRun(a, b) { let best = 0; const prev = new Array(b.length + 1).fill(0); for (let i = 1; i <= a.length; i++) { let diag = 0; for (let j = 1; j <= b.length; j++) { const tmp = prev[j]; prev[j] = a[i - 1] === b[j - 1] ? diag + 1 : 0; if (prev[j] > best) best = prev[j]; diag = tmp; } } return best; }
-function similarity(a, b) { if (!a.length || !b.length) return 0; const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0)); for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]); return 2 * dp[a.length][b.length] / (a.length + b.length); }
-function score(truth, answer, hitWords) { const t = words(truth), a = words(answer); const ep = exactPrefix(t, a); return { hit: t.length > 0 && ep >= Math.min(hitWords, t.length), ep, run: longestRun(t, a), sim: similarity(t, a), unknown: looksUnknown(answer) }; }
-
-// Clopper-Pearson via the regularised incomplete beta (Lentz continued fraction) and bisection.
-function lgamma(x) { const g = [676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7]; if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - lgamma(1 - x); x -= 1; let a = 0.99999999999980993; const t = x + 7.5; for (let i = 0; i < 8; i++) a += g[i] / (x + i + 1); return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a); }
-function betacf(a, b, x) { const MAXIT = 300, EPS = 3e-14, FPMIN = 1e-300; const qab = a + b, qap = a + 1, qam = a - 1; let c = 1, d = 1 - qab * x / qap; if (Math.abs(d) < FPMIN) d = FPMIN; d = 1 / d; let h = d; for (let m = 1; m <= MAXIT; m++) { const m2 = 2 * m; let aa = m * (b - m) * x / ((qam + m2) * (a + m2)); d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN; c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN; d = 1 / d; h *= d * c; aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2)); d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN; c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN; d = 1 / d; const del = d * c; h *= del; if (Math.abs(del - 1) < EPS) break; } return h; }
-function ibeta(a, b, x) { if (x <= 0) return 0; if (x >= 1) return 1; const bt = Math.exp(lgamma(a + b) - lgamma(a) - lgamma(b) + a * Math.log(x) + b * Math.log(1 - x)); return x < (a + 1) / (a + b + 2) ? bt * betacf(a, b, x) / a : 1 - bt * betacf(b, a, 1 - x) / b; }
-function betaPpf(p, a, b) { let lo = 0, hi = 1; for (let i = 0; i < 100; i++) { const mid = (lo + hi) / 2; if (ibeta(a, b, mid) < p) lo = mid; else hi = mid; } return (lo + hi) / 2; }
-function clopperPearson(k, n, alpha = 0.05) { if (!n) return [0, 1]; return [k === 0 ? 0 : betaPpf(alpha / 2, k, n - k + 1), k === n ? 1 : betaPpf(1 - alpha / 2, k + 1, n - k)]; }
-
-function summarise(tier, scores) {
-  const groups = {}; scores.forEach(s => groups[s.group] = groups[s.group] || s.hit);
-  const valid = scores.filter(s => !s.refused), ng = Object.keys(groups).length, hg = Object.values(groups).filter(Boolean).length, [lo, hi] = clopperPearson(hg, ng);
-  const mean = (arr, f) => arr.length ? arr.reduce((a, s) => a + f(s), 0) / arr.length : 0;
-  return { tier, n_groups: ng, hit_groups: hg, rate: ng ? hg / ng : 0, ci_lo: lo, ci_hi: hi, n_probes: scores.length, hit_probes: scores.filter(s => s.hit).length,
-           unknown: valid.filter(s => s.unknown).length, refused: scores.filter(s => s.refused).length, mean_exact_prefix: mean(valid, s => s.ep), max_longest_run: Math.max(0, ...valid.map(s => s.run)), mean_sim: mean(valid, s => s.sim) };
-}
-const VERDICTS = {
-  strong_memorization: 'Several independent passages reproduced exactly, and the control tier shows none. Strong evidence the model has seen this material (or a copy of it). Not proof of which copy.',
-  memorization_signal: 'At least one exact reproduction, or exact-prefix lengths clearly above control. Behavioural evidence consistent with exposure; needs more passages or a second model to firm up.',
-  no_signal: 'Nothing above the control tier. This is NOT evidence of absence: unmemorised, deduplicated, or safety-filtered training data looks the same.',
-  inconclusive: 'Too few valid answers (refusals, errors, or no control tier) to say anything.' };
-function verdict(t, c, minStrong = 3) {
-  if (t.n_groups < 5 || t.refused >= t.n_probes) return 'inconclusive';
-  const cHits = c ? c.hit_groups : 0, cHi = c && c.n_groups ? c.ci_hi : (c ? 0 : 1);
-  const clear = cHits === 0 || t.ci_lo > cHi;
-  if (t.hit_groups >= minStrong && clear && c) return 'strong_memorization';
-  if (t.hit_groups >= 1 && (cHits === 0 || t.rate > cHi)) return 'memorization_signal';
-  return 'no_signal';
-}
-
-// ------------------------------------------------------------------ run
-async function pool(items, n, fn, onDone) { let i = 0, done = 0; const out = new Array(items.length); await Promise.all(Array.from({ length: n }, async () => { while (i < items.length) { const j = i++; out[j] = await fn(items[j]); onDone(++done, items.length); } })); return out; }
-let lastResults = null;
-function readSettings() {
-  return { text: $('doc').value, ctrl: $('ctrl').value.trim(), prefixWords: $('prefix').value.split(',').map(Number).filter(Boolean),
-           suffixWords: +$('suffix').value, hitWords: +$('hitw').value, nP: +$('passages').value };
-}
-function buildAll(st) {
-  let probes = buildProbes(st.text, 'target', 'doc', st.nP, st.prefixWords, st.suffixWords);
-  if (st.ctrl) probes = probes.concat(buildProbes(st.ctrl, 'control', 'ctrl', st.nP, st.prefixWords, st.suffixWords));
-  return probes;
-}
-function scoreAndReport(answers, models, prefixWords, hitWords) {
-  const { report, scored } = scoreAndReport(answers, models, prefixWords, hitWords);
-  lastResults = { date: new Date().toISOString(), settings: { prefixWords, suffixWords, hitWords, passages: nP, models, paraphrase_with: para || null }, report, answers: scored };
-  $('status').hidden = true; render(report, scored, prefixWords); $('go').disabled = false; $('dl').hidden = false;
-};
-$('dl').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(lastResults, null, 2)], { type: 'application/json' })); a.download = 'didyoueatthis-results.json'; a.click(); };
-
-const cls = { strong_memorization: 'v-strong', memorization_signal: 'v-signal', no_signal: 'v-none', inconclusive: 'v-inc' };
-const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-function render(report, scored, prefixWords) {
-  const out = $('result'); out.hidden = false; out.innerHTML = '';
-  for (const [model, r] of Object.entries(report)) {
-    const card = document.createElement('div'); card.className = 'card';
-    let h = `<div class="hint">${esc(model)}</div><div class="verdict ${cls[r.verdict]}">${r.verdict.replace('_', ' ')}</div><p>${r.verdict_text}</p>`;
-    if (!r.tiers.control && !r.tiers.paraphrase) h += '<p class="warn small">No control tier: the verdict cannot exceed "memorization signal". Add a matched control document or a paraphrase model.</p>';
-    h += '<div class="wrap"><table><tr><th>tier</th><th class="num">passages</th><th class="num">reproduced</th><th class="num">rate [95% CI]</th><th class="num">unknown</th><th class="num">refused/err</th><th class="num">mean exact-prefix words</th><th class="num">longest exact run</th><th class="num">mean sim</th></tr>';
-    for (const [t, s] of Object.entries(r.tiers)) h += `<tr><td>${t}</td><td class="num">${s.n_groups}</td><td class="num">${s.hit_groups}</td><td class="num">${s.rate.toFixed(2)} [${s.ci_lo.toFixed(2)}, ${s.ci_hi.toFixed(2)}]</td><td class="num">${s.unknown}</td><td class="num">${s.refused}</td><td class="num">${s.mean_exact_prefix.toFixed(1)}</td><td class="num">${s.max_longest_run}</td><td class="num">${s.mean_sim.toFixed(2)}</td></tr>`;
-    h += `</table></div><div class="wrap"><table><tr><th>reproduced / passages by prefix words</th>${prefixWords.map(P => `<th class="num">${P}</th>`).join('')}</tr>`;
-    for (const [t, o] of Object.entries(r.breakdown)) h += `<tr><td>${t}</td>${prefixWords.map(P => `<td class="num">${o[P].hit_groups}/${o[P].n_groups}</td>`).join('')}</tr>`;
-    h += '</table></div>';
-    const mine = scored.filter(s => s.model === model), show = r.hits.length ? r.hits : mine.slice(0, 6);
-    h += `<details><summary>${r.hits.length} reproduced answers (${mine.length} answers in total; ${r.hits.length ? 'showing hits' : 'showing the first few'})</summary>`;
-    for (const e of show) h += `<p class="hint">${e.tier} · ${esc(e.group)} · prefix ${e.prefixWords}${e.error ? ' · <span class="warn">' + esc(e.error) + '</span>' : ''}</p><pre>TRUTH:  ${esc(e.truth)}\nANSWER: ${esc(e.refused && !e.error ? '[refused]' : e.answer)}</pre>`;
-    h += '</details>'; card.innerHTML = h; out.append(card);
-  }
-}
-</script>
 </body>
 </html>

@@ -1,7 +1,8 @@
 """Command line.
 
     didyoueatthis models                      list provider prefixes usable with the current keys
-    didyoueatthis text  --doc FILE [--control FILE ...] --models openai:gpt-5 anthropic:claude-opus-5
+    didyoueatthis text  --doc FILE [--control FILE ...] --models ... [--methods continuation,cloze,mcq]
+    didyoueatthis mink  --doc FILE --control FILE --model local:your-model   log-prob test
     didyoueatthis csv   --file table.csv --models ...            row-continuation test for a table
     didyoueatthis manual export|score ...      no API key: write prompts to paste into a chat UI, score pasted answers
     didyoueatthis testsets list|fetch|run ...  calibration sets with known status (docs/04-test-sets.md)
@@ -24,6 +25,8 @@ from dotenv import load_dotenv
 
 from .core.probe import Probe, dump_jsonl, load_jsonl
 from .core.report import build_report, to_markdown
+from .core.cloze import build_cloze_probes
+from .core.mcq import build_mcq_probes
 from .core.text import DEFAULT_PREFIX_WORDS, DEFAULT_SUFFIX_WORDS, build_text_probes, paraphrase_probes
 from .runner import RunConfig, ensure_dir, run_probes, score_responses
 
@@ -65,27 +68,50 @@ def cmd_text(a):
     print(to_markdown(rep))
 
 
+def _build_doc_probes(path, tier, a, methods, para):
+    """All probe families requested for one document. `para` = (provider, model) for paraphrases or None."""
+    did = os.path.splitext(os.path.basename(path))[0]
+    text = open(path, encoding="utf-8").read()
+    prefixes = tuple(int(x) for x in a.prefix_words.split(","))
+    probes = []
+    if "continuation" in methods:
+        probes += build_text_probes(text, tier, did, a.passages, prefixes, a.suffix_words, a.seed)
+    if "cloze" in methods:
+        probes += build_cloze_probes(text, tier, did, a.passages, seed=a.seed)
+    if "mcq" in methods:
+        if para is None:
+            print("mcq needs a paraphrasing model: pass --paraphrase-with (skipping mcq)", file=sys.stderr)
+        else:
+            probes += build_mcq_probes(text, tier, did, para[0], para[1], a.passages, seed=a.seed)
+    return probes
+
+
 def _run_text_docs(targets, controls, models, a, run_dir, meta_extra):
     """Shared by `text` and `testsets run`: build target/control probes from files, run, score, report."""
     from .providers import get_provider, split_model
     prefixes = tuple(int(x) for x in a.prefix_words.split(","))
-    probes = []
-    for path in targets:
-        did = os.path.splitext(os.path.basename(path))[0]
-        probes += build_text_probes(open(path, encoding="utf-8").read(), "target", did, a.passages, prefixes, a.suffix_words, a.seed)
-    for path in controls:
-        did = os.path.splitext(os.path.basename(path))[0]
-        probes += build_text_probes(open(path, encoding="utf-8").read(), "control", did, a.passages, prefixes, a.suffix_words, a.seed)
+    methods = [m.strip() for m in a.methods.split(",")]
+    para = None
     if getattr(a, "paraphrase_with", None):
         pfx, mid = split_model(a.paraphrase_with)
-        probes += paraphrase_probes([p for p in probes if p.tier == "target"], get_provider(pfx), mid)
+        para = (get_provider(pfx), mid)
+    elif "mcq" in methods:
+        pfx, mid = split_model(models[0])   # distractors only; the model under test is fine for that
+        para = (get_provider(pfx), mid)
+    probes = []
+    for path in targets:
+        probes += _build_doc_probes(path, "target", a, methods, para)
+    for path in controls:
+        probes += _build_doc_probes(path, "control", a, methods, para)
+    if getattr(a, "paraphrase_with", None) and "continuation" in methods:
+        probes += paraphrase_probes([p for p in probes if p.tier == "target" and p.family == "text"], para[0], para[1])
     cfg = RunConfig(models=models, cache_path=os.path.join(run_dir, "responses.jsonl"), workers=a.workers,
                     hit_words=a.hit_words, seed=a.seed, limit=a.limit, progress=_progress)
     print(f"{len(probes)} probes x {len(models)} models -> {run_dir}", file=sys.stderr)
     responses = run_probes(probes, cfg)
     scores = score_responses(probes, responses, a.hit_words, a.seed)
     return _write_run(run_dir, probes, responses, scores,
-                      {"family": "text", "targets": targets, "controls": controls, "models": models,
+                      {"family": "text", "methods": methods, "targets": targets, "controls": controls, "models": models,
                        "prefix_words": prefixes, "suffix_words": a.suffix_words, "hit_words": a.hit_words,
                        "date": time.strftime("%Y-%m-%d"), **meta_extra})
 
@@ -134,8 +160,10 @@ def cmd_testsets(a):
     rep = _run_text_docs(targets, controls, a.models, a, run_dir, {"testset": a.name, "expected": ts.expected})
     print(to_markdown(rep))
     for model, fams in rep["models"].items():
-        got = fams["text"]["verdict"]
-        print(f"CALIBRATION {a.name} {model}: expected {ts.expected}, got {got} -> {'OK' if got == ts.expected else 'MISMATCH'}")
+        for fam, r in fams.items():
+            got = r["verdict"]
+            print(f"CALIBRATION {a.name} {model} [{r['method']}]: expected {ts.expected}, got {got} -> "
+                  f"{'OK' if got == ts.expected else 'MISMATCH'}")
 
 
 
@@ -189,6 +217,34 @@ def cmd_manual(a):
     print(to_markdown(rep))
 
 
+def cmd_mink(a):
+    """Min-K% on token log-probabilities: score the target and control documents directly (no generation)."""
+    import json as _json
+    from .core.mink import score_document, summarise_mink
+    from .providers import get_provider, split_model
+    pfx, mid = split_model(a.model)
+    prov = get_provider(pfx)
+    target, control = [], []
+    for path in [a.doc]:
+        target += score_document(prov, mid, open(path, encoding="utf-8").read(), os.path.basename(path), "target", a.chunk_words, a.max_chunks)
+    for path in a.control:
+        control += score_document(prov, mid, open(path, encoding="utf-8").read(), os.path.basename(path), "control", a.chunk_words, a.max_chunks)
+    rep = summarise_mink(target, control)
+    rep["model"], rep["doc"], rep["controls"] = a.model, a.doc, a.control
+    run_dir = a.run_dir or os.path.join("results", f"mink_{time.strftime('%Y%m%d-%H%M%S')}")
+    ensure_dir(run_dir)
+    with open(os.path.join(run_dir, "mink.json"), "w") as f:
+        _json.dump({"summary": rep, "chunks": [c.__dict__ for c in target + control]}, f, indent=2, default=str)
+    print(f"Min-K% ({a.model}): {len(target)} target chunks vs {len(control)} control chunks")
+    for k, r in rep["k"].items():
+        if "note" in r:
+            print(f"  k={k:.0%}: {r['note']}")
+        else:
+            print(f"  k={k:.0%}: {r['target_above']}/{len(target)} target chunks above control p95 "
+                  f"(target median {r['target_median']:.2f}, control median {r['control_median']:.2f})")
+    print(f"-> {run_dir}/mink.json")
+
+
 def cmd_rescore(a):
     """Re-score and re-report a run directory without re-querying (e.g. after changing scoring)."""
     from .core.probe import Response
@@ -214,7 +270,9 @@ def main(argv=None):
     sp.add_parser("models", help="list usable providers").set_defaults(fn=cmd_models)
 
     def text_opts(p):
-        p.add_argument("--paraphrase-with", help="model used to build the paraphrase tier, e.g. openai:gpt-5")
+        p.add_argument("--methods", default="continuation,cloze",
+                       help="comma list of continuation, cloze, mcq (mcq needs a paraphrasing model; defaults to the first model)")
+        p.add_argument("--paraphrase-with", help="model used for paraphrases (mcq distractors, paraphrase tier), e.g. openai:gpt-4.1")
         p.add_argument("--passages", type=int, default=12)
         p.add_argument("--prefix-words", default=",".join(map(str, DEFAULT_PREFIX_WORDS)))
         p.add_argument("--suffix-words", type=int, default=DEFAULT_SUFFIX_WORDS)
@@ -273,6 +331,15 @@ def main(argv=None):
     ms.add_argument("--hit-words", type=int, default=20)
     ms.add_argument("--seed", type=int, default=0)
     ms.set_defaults(fn=cmd_manual)
+
+    mk = sp.add_parser("mink", help="Min-K%% log-probability test (needs an endpoint that scores given text)")
+    mk.add_argument("--doc", required=True)
+    mk.add_argument("--control", action="append", required=True)
+    mk.add_argument("--model", required=True, help="local:<open-weight model> with input-token echo/logprobs support")
+    mk.add_argument("--chunk-words", type=int, default=200)
+    mk.add_argument("--max-chunks", type=int, default=20)
+    mk.add_argument("--run-dir")
+    mk.set_defaults(fn=cmd_mink)
 
     rs = sp.add_parser("rescore", help="re-score a run directory without re-querying")
     rs.add_argument("--run-dir", required=True)

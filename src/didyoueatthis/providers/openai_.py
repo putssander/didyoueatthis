@@ -47,6 +47,9 @@ class OpenAIProvider(Provider):
         messages.append({"role": "user", "content": probe.prompt})
         kw: dict = dict(model=model, messages=messages, max_completion_tokens=probe.max_tokens)
         meta: dict = {}
+        if _is_reasoning(model):
+            # The cap counts hidden reasoning tokens too; a tight cap yields an empty answer.
+            kw["max_completion_tokens"] = probe.max_tokens + 2048
         if _is_reasoning(model) and self.prefix == "openai":
             # Lowest reasoning setting the family accepts: recall, not deliberation.
             kw["reasoning_effort"] = "low" if model.lower().startswith("gpt-6") else "minimal"
@@ -69,3 +72,14 @@ class OpenAIProvider(Provider):
         refused = choice.finish_reason == "content_filter" or (
             getattr(choice.message, "refusal", None) is not None and bool(choice.message.refusal))
         return Response(probe_id=probe.id, model=model, text=text, refused=refused, usage=usage, raw_meta=meta)
+
+    def logprobs_of(self, model: str, text: str) -> list[tuple[str, float | None]]:
+        """Score `text` with the legacy completions endpoint (echo=True, max_tokens=0).
+
+        Works for OpenAI-compatible servers (vLLM, llama.cpp) hosting open
+        weights.  OpenAI's own API rejects echo+logprobs (checked 2026-09-08).
+        """
+        r = self.client.completions.create(model=model, prompt=text, max_tokens=0, echo=True, logprobs=0,
+                                           temperature=0)
+        lp = r.choices[0].logprobs
+        return list(zip(lp.tokens, lp.token_logprobs))

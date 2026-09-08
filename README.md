@@ -1,9 +1,8 @@
 # didyoueatthis
 
-*Did a language model eat your document?* Live page: https://putssander.github.io/didyoueatthis/
+*Did a language model eat your document?* Live page: https://sanderputs.com/didyoueatthis/
 
-Evidence-graded tests for one question: **does a language model reproduce content it could only have seen by
-training on (a copy of) this document or table?**
+Evidence-graded tests for one question: **does a language model reproduce distinctive, withheld content from this document or table?**
 
 The two literature surveys in [docs/deepresearch/](docs/deepresearch/) establish that training-set *membership*
 cannot be proven from outside a closed model, but *verbatim reproduction of rare content, absent on matched
@@ -24,7 +23,7 @@ Each model gets a verdict that is an *evidence category*, never a probability:
 
 | verdict | meaning |
 |---|---|
-| `strong_memorization` | >= 3 independent passages (or rows) reproduced verbatim; the matched control reproduces none. The model has seen this text or a copy of it. |
+| `strong_memorization` | >= 3 independent passages (or rows) reproduced verbatim; the matched control reproduces none. Evidence consistent with exposure, subject to control quality and other information sources. |
 | `memorization_signal` | at least one verbatim reproduction above control; needs more passages or a second model |
 | `no_signal` | nothing above control. **Not evidence of absence.** |
 | `inconclusive` | too few valid answers |
@@ -48,7 +47,7 @@ uv run didyoueatthis testsets run titanic    --models openai:gpt-5 anthropic:cla
 
 # 2. Your document, with a matched control believed unseen and a paraphrase tier
 uv run didyoueatthis text --doc paper.txt --control control.txt \
-    --models openai:gpt-5 anthropic:claude-opus-5 google:gemini-2.5-pro --paraphrase-with openai:gpt-5
+    --models openai:gpt-5 anthropic:claude-opus-5 google:gemini-3.8-flash --paraphrase-with openai:gpt-5
 
 # 3. A table (synthetic control rows are built automatically)
 uv run didyoueatthis csv --file mytable.csv --models openai:gpt-5
@@ -95,7 +94,7 @@ Published membership-inference benchmarks (WikiMIA, BookMIA, MIMIR) are delibera
 
 Settings: 4 passages per book, prefixes of 32 and 128 words, 40-word hidden suffix, hit = first 20 words exact.
 "Reproduced" counts passages with at least one exact hit; "[UNKNOWN]" is the share of answers where the model
-declined. Control = fresh Wikipedia articles created in the days before the run (0 reproduced for every model).
+declined. Control = recent Wikipedia articles where a run included them; a dash means unmeasured. Recent article creation does not guarantee unseen wording. These are historical CLI heuristic verdicts, not independently validated training-membership claims.
 Full tables and every verbatim answer are in `results/` (git-ignored, on the machine that ran them).
 
 | model | Gutenberg: reproduced / 16 passages | [UNKNOWN] | fresh-wiki | Titanic rows / 10 | verdict on Gutenberg |
@@ -118,31 +117,77 @@ What this shows:
   public-domain novel from a 32-word prefix in half or more of the passages, and never do so for text written
   last week. The Anthropic model, answering by hand, does the same.
 - **Newer tuned chat models decline rather than recite.** GPT-4o, GPT-5 and GPT-6 answer `[UNKNOWN]` to
-  almost every request, Pride and Prejudice included. Their weights surely contain the books; the behaviour is
-  suppressed. For these models a `no_signal` on *your* document means nothing, which is exactly why the
-  known-positive set runs first. The token log-probability route (not yet implemented) is the way around this
-  for models that expose it.
+  almost every request, Pride and Prejudice included. This does not establish whether a particular book is in their weights, or why they decline. For these models a `no_signal` on *your* document means nothing, which is exactly why the
+  known-positive set runs first. The new Min-K% route scores supplied text on compatible local endpoints, with its own calibration limitations.
 - **Tables are harder than prose.** Titanic rows came back once out of ten for gpt-4.1 (with five context
   rows) and never for gpt-5, despite the table's ubiquity; single-row prompts with no context reproduced nothing.
 - The Anthropic result was obtained without any Anthropic API call: the model running this session answered the
   exported prompts from memory, without access to the answer key, and the answers were scored with
   `didyoueatthis manual score`. Cutoff dates for these and other models: [docs/05-model-cutoffs.md](docs/05-model-cutoffs.md).
 
+### Cloze and multiple-choice rerun
+
+The budget-fixed background run completed on September 8: **512/512 responses,
+zero empty outputs, zero API errors**, all with a normal stop reason. This
+supersedes the earlier cloze/MCQ readings affected by reasoning-token budgets.
+The run contains 15 target and 32 control name-cloze probes, plus 24 target
+and 57 control MCQ probes, for each of four models.
+
+| Model | Cloze: target | Cloze: control | MCQ: target | MCQ: control |
+|---|---:|---:|---:|---:|
+| gpt-5 | 8/15 | 13/32 | 23/24 | 44/57 |
+| gpt-4o | 8/15 | 14/32 | 21/24 | 34/57 |
+| gpt-4.1 | 10/15 | 15/32 | 23/24 | 41/57 |
+| gemini-3.8-flash | 15/15 | 18/32 | 24/24 | 54/57 |
+
+**The control scores are the main finding.** High target accuracy alone is
+misleading: models also recover many control names and recognise originals
+among control paraphrases. Wikipedia is not genre-matched to these novels,
+and recent pages may reuse old facts and text.
+
+Inspection also found **duplicate options in 41/81 MCQ prompts**. These
+historical counts must not be interpreted as clean four-choice results or a
+replication of DE-COP. The generator now rejects duplicate options; a future
+run needs inspected, distinct distractors and better controls. No replacement
+paid calibration was launched as part of the website repair.
+
+[Aggregate counts, intervals and provenance hashes](docs/calibration-2026-09-08.json)
+are public; original prompts/responses remain in the git-ignored
+`results/calib_gutenberg_cloze_mcq/`. The separate `calib_gutenberg_budgetfix`
+run is incomplete and is not substituted into the older continuation table.
+The earlier continuation table and the rerun above are separate experiments.
+
 ## The static page on GitHub Pages
 
-The page runs the whole test in the
-browser: passage selection, prompting, scoring and statistics are a JavaScript port of `core/text.py` and
-`core/scoring.py` (checked against scipy to four decimals), and the API key goes from the browser directly to
-the vendor (Anthropic requires the `anthropic-dangerous-direct-browser-access` header, which the page sets).
-It has a one-click known positive (Pride and Prejudice, embedded) and fetches fresh Wikipedia articles as a
-control from the Wikipedia API. Results download as JSON. Use a low-limit key made for this purpose.
+Open [the website](https://sanderputs.com/didyoueatthis/) and click **Try a book
+example**. It prepares three continuation prompts without making model calls.
+Copy one into a fresh chat, paste its reply, then move to the next prompt.
+The first short run is explicitly exploratory. Use your own text and a matched
+control, then increase test size for a more useful comparison.
 
-**Without a key**, tick *Manual mode*: the page generates numbered, self-contained prompts (6 passages, 64-word
-prefix by default, so about a dozen prompts with a control), each copyable; paste them one per fresh chat into
-ChatGPT, Claude, Gemini or anything else, paste the replies back (per row, or all at once with the
-`##### ANSWER n #####` markers) and score locally. The CLI equivalent is `didyoueatthis manual export` /
-`didyoueatthis manual score`. Chat products may have web search or memory switched on; turn those off, because
-a retrieved quotation is not a memorised one.
+Copy-paste mode is the default. API mode sends prompts directly to selected
+OpenAI, Anthropic or Google endpoints, shows request counts, supports stopping
+with partial results, and leaves room for hidden reasoning tokens. Requests
+may incur vendor charges. Documents and replies stay in the page until reload;
+keys are remembered only if opted in and can be cleared with **Forget keys**.
+
+Continuation and name cloze are scored separately. The browser requires five
+usable target passages for a verdict, five usable control passages when
+provided, and complete non-unknown replies for a conclusive comparison. Cloze
+never receives the strong-continuation label and needs separated intervals to
+show a signal. These are intentionally more conservative rules than the
+historical CLI heuristic, not a byte-for-byte port. Browser passage sampling
+is deterministic but uses a different random generator from Python.
+
+Downloads include numbered prompts or a JSON report containing prompts,
+held-out answers, replies and settings, with no keys. Bulk replies use
+`##### ANSWER n #####` markers. Clipboard-denied browsers can select and copy
+the prompt manually or download the prompts. See the
+[techniques guide](docs/06-techniques.md) for papers, limitations and CLI methods.
+
+For development: `npm ci && npm test` runs offline DOM/workflow and scoring
+regression checks. `uv run pytest` checks the Python pipeline. Serve `docs/`
+with any static server; there is no JavaScript build step.
 
 ## Data policy
 
@@ -157,6 +202,8 @@ hold fetched texts and verbatim model answers.
 ```
 docs/
   index.html              static client (GitHub Pages)
+  app.js / core.js / style.css  guided UI, pure scoring/probes, responsive styles
+  06-techniques.md        practical guide, papers and limitations
   01-design.md            what is measured, controls, confidence, verdict rules, failure modes
   04-test-sets.md         calibration sets, matching controls to targets, why MIA benchmarks are excluded
   05-model-cutoffs.md     training cutoffs of popular models; why the chat harness looks more current than the weights
@@ -181,8 +228,8 @@ tests/test_pipeline.py    end-to-end with the mock provider, no network
   passes; fetchers verified against the live sources.
 - Calibration has been run on seven OpenAI models, two Gemini Flash models and, by hand, on Claude Fable 5.1
   (table above). gemini-2.5-pro is retired on the API; gemini-3.1-pro-preview needs a paid quota to finish.
-- Not implemented: likelihood scores (Min-K%) on the stored log-probabilities; a base-model (non-chat) endpoint
-  for local models; canary generation for future documents.
+- Added: continuation/name-cloze browser workflows, CLI cloze and experimental MCQ, local input-token Min-K%, and rescore.
+- The public-domain fine-tuning script retains a legacy OpenAI launch path that was rejected in the recorded attempt; it does not implement local training. Canary generation remains unimplemented.
 
 ## People
 

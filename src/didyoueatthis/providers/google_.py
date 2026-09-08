@@ -23,7 +23,8 @@ class GoogleProvider(Provider):
         self.client = genai.Client()
 
     def _call(self, model: str, probe: Probe) -> Response:
-        cfg_kw: dict = dict(temperature=self.settings.temperature, max_output_tokens=max(probe.max_tokens, 64))
+        # Thinking tokens count against max_output_tokens; leave room, and switch thinking off where allowed.
+        cfg_kw: dict = dict(temperature=self.settings.temperature, max_output_tokens=max(probe.max_tokens, 64) + 2048)
         if probe.system:
             cfg_kw["system_instruction"] = probe.system
         if "flash" in model:
