@@ -301,6 +301,7 @@ docs/
   app.js / core.js / style.css  guided UI, pure scoring/probes, responsive styles
   06-techniques.md        practical guide, papers and limitations
   07-copyright.md         permitted sources, attribution and sharing results
+  08-juicy-sources.md     material that was off-limits when models trained: graded candidates, status, order of work
   01-design.md            what is measured, controls, confidence, verdict rules, failure modes
   04-test-sets.md         calibration sets, matching controls to targets, why MIA benchmarks are excluded
   05-model-cutoffs.md     training cutoffs of popular models; why the chat harness looks more current than the weights
