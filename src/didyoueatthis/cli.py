@@ -388,7 +388,7 @@ def main(argv=None):
     tsp.add_parser("list").set_defaults(fn=cmd_testsets)
     for name, help_ in (("fetch", "download a set"), ("run", "fetch (if needed) and run a set")):
         q = tsp.add_parser(name, help=help_)
-        q.add_argument("name", choices=["gutenberg", "fresh-wiki", "old-wiki", "stable-wiki", "enron", "gsm8k", "titanic"])
+        q.add_argument("name", choices=["gutenberg", "fresh-wiki", "old-wiki", "stable-wiki", "enron", "gsm8k", "cablegate", "clinton-emails", "titanic"])
         q.add_argument("--root", default="data/testsets")
         if name == "run":
             q.add_argument("--models", nargs="+", required=True)
