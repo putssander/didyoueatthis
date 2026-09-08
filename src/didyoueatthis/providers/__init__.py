@@ -45,6 +45,22 @@ def split_model(qualified: str) -> tuple[str, str]:
     return p, m
 
 
+_RUN_SETTINGS: dict[str, object] = {}
+
+
+def configure(reasoning: bool | None = None) -> None:
+    """Apply run-level settings to every provider created so far or later.
+
+    Dataclass defaults are frozen into ``Settings.__init__`` at class creation,
+    so a class attribute cannot be used for "later"; the values are kept here
+    and applied by ``get_provider`` when a provider is constructed.
+    """
+    if reasoning is not None:
+        _RUN_SETTINGS["reasoning"] = reasoning
+        for prov in _REGISTRY.values():
+            prov.settings.reasoning = reasoning
+
+
 def get_provider(prefix: str, **kw) -> Provider:
     """Return (and cache) the provider object for a prefix. Imports lazily so a
     missing SDK for one vendor never blocks the others. Keyword arguments only
@@ -72,6 +88,8 @@ def get_provider(prefix: str, **kw) -> Provider:
         prov = GoogleProvider()
     else:
         raise ValueError(f"unknown provider prefix {prefix!r}")
+    for k, v in _RUN_SETTINGS.items():
+        setattr(prov.settings, k, v)
     _REGISTRY[prefix] = prov
     return prov
 

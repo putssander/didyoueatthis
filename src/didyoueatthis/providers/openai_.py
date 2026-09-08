@@ -22,7 +22,11 @@ from .base import Provider, Settings
 
 
 def _is_reasoning(model: str) -> bool:
+    """Reasoning models reject sampling parameters and take reasoning_effort. The *-chat-latest
+    aliases are the ChatGPT-tuned non-reasoning variants and behave like gpt-4.1."""
     m = model.lower()
+    if "chat-latest" in m:
+        return False
     return m.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
 
 
@@ -41,6 +45,8 @@ class OpenAIProvider(Provider):
         self.client = OpenAI(timeout=self.settings.timeout_s, **kw)
 
     def _call(self, model: str, probe: Probe) -> Response:
+        if self.settings.reasoning and _is_reasoning(model) and self.prefix == "openai":
+            return self._call_responses(model, probe)
         messages = []
         if probe.system:
             messages.append({"role": "system", "content": probe.system})
@@ -52,7 +58,9 @@ class OpenAIProvider(Provider):
             kw["max_completion_tokens"] = probe.max_tokens + 2048
         if _is_reasoning(model) and self.prefix == "openai":
             # Lowest reasoning setting the family accepts: recall, not deliberation.
-            kw["reasoning_effort"] = "low" if model.lower().startswith("gpt-6") else "minimal"
+            # "minimal" exists only on the first gpt-5 family (gpt-5, -mini, -nano); later generations start at "low".
+            m = model.lower()
+            kw["reasoning_effort"] = "minimal" if (m == "gpt-5" or m.startswith(("gpt-5-mini", "gpt-5-nano", "gpt-5-2025"))) else "low"
             meta["sampling"] = "omitted (reasoning model)"
         else:
             kw["temperature"] = self.settings.temperature
@@ -68,9 +76,36 @@ class OpenAIProvider(Provider):
         meta["system_fingerprint"] = getattr(resp, "system_fingerprint", None)
         if getattr(choice, "logprobs", None) and choice.logprobs and choice.logprobs.content:
             meta["logprobs"] = [(lp.token, lp.logprob) for lp in choice.logprobs.content]
+        # OpenAI-compatible reasoning models (DeepSeek, local gpt-oss/Qwen servers) return the trace here.
+        rc = getattr(choice.message, "reasoning_content", None) or getattr(choice.message, "reasoning", None)
+        if rc:
+            meta["reasoning"] = str(rc)
         usage = resp.usage.model_dump() if resp.usage else {}
         refused = choice.finish_reason == "content_filter" or (
             getattr(choice.message, "refusal", None) is not None and bool(choice.message.refusal))
+        return Response(probe_id=probe.id, model=model, text=text, refused=refused, usage=usage, raw_meta=meta)
+
+    def _call_responses(self, model: str, probe: Probe) -> Response:
+        """Responses API with reasoning summaries (documented option; summaries are written by the vendor)."""
+        inp = []
+        if probe.system:
+            inp.append({"role": "developer", "content": probe.system})
+        inp.append({"role": "user", "content": probe.prompt})
+        effort = "low" if model.lower().startswith("gpt-6") else "low"
+        r = self.client.responses.create(model=model, input=inp, reasoning={"effort": effort, "summary": "auto"},
+                                         max_output_tokens=probe.max_tokens + 2048)
+        text, reasoning = "", []
+        for item in r.output:
+            if item.type == "reasoning":
+                reasoning += [s.text for s in (item.summary or [])]
+            elif item.type == "message":
+                text += "".join(p.text for p in item.content if getattr(p, "type", "") == "output_text")
+        meta = {"api": "responses", "status": r.status, "reasoning": "\n\n".join(reasoning),
+                "reasoning_tokens": getattr(getattr(r.usage, "output_tokens_details", None), "reasoning_tokens", None),
+                "sampling": "omitted (reasoning model)"}
+        refused = any(getattr(item, "type", "") == "message" and any(getattr(p, "type", "") == "refusal" for p in item.content)
+                      for item in r.output)
+        usage = r.usage.model_dump() if r.usage else {}
         return Response(probe_id=probe.id, model=model, text=text, refused=refused, usage=usage, raw_meta=meta)
 
     def logprobs_of(self, model: str, text: str) -> list[tuple[str, float | None]]:

@@ -27,7 +27,9 @@ class GoogleProvider(Provider):
         cfg_kw: dict = dict(temperature=self.settings.temperature, max_output_tokens=max(probe.max_tokens, 64) + 2048)
         if probe.system:
             cfg_kw["system_instruction"] = probe.system
-        if "flash" in model:
+        if self.settings.reasoning:
+            cfg_kw["thinking_config"] = types.ThinkingConfig(include_thoughts=True, thinking_budget=1024)
+        elif "flash" in model:
             cfg_kw["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
         resp = self.client.models.generate_content(
             model=model, contents=probe.prompt, config=types.GenerateContentConfig(**cfg_kw))
@@ -35,8 +37,13 @@ class GoogleProvider(Provider):
         refused = False
         text = ""
         try:
-            text = resp.text or ""
-        except Exception:  # noqa: BLE001 - blocked responses raise on .text
+            parts = resp.candidates[0].content.parts or [] if resp.candidates else []
+            thoughts = [p.text for p in parts if getattr(p, "thought", False) and p.text]
+            answers = [p.text for p in parts if not getattr(p, "thought", False) and p.text]
+            text = "".join(answers)
+            if thoughts:
+                meta["reasoning"] = "\n\n".join(thoughts)
+        except Exception:  # noqa: BLE001 - blocked responses have no parts
             text = ""
         if resp.candidates:
             fr = getattr(resp.candidates[0], "finish_reason", None)

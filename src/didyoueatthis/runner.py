@@ -19,8 +19,8 @@ from dataclasses import dataclass, field
 
 from .core.probe import Probe, Response
 from .core.mcq import score_choice
-from .core.scoring import Score, looks_unknown, score_continuation, score_value
-from .providers import get_provider, split_model
+from .core.scoring import Score, looks_unknown, reasoning_signals, score_continuation, score_value
+from .providers import configure, get_provider, split_model
 from .providers.cache import ResponseCache
 
 RESTRICTED_TIERS = {"restricted"}
@@ -34,6 +34,7 @@ class RunConfig:
     allow_restricted_context: bool = False     # override the gate (you have an approved endpoint)
     hit_words: int = 20                        # text family: leading words that must match
     seed: int = 0
+    reasoning: bool = False                    # request vendor reasoning summaries alongside answers
     limit: int | None = None                   # for smoke runs
     progress: object = None                    # callable(done, total) or None
     extra: dict = field(default_factory=dict)
@@ -52,6 +53,7 @@ def run_probes(probes: list[Probe], cfg: RunConfig) -> list[Response]:
     """Send every probe to every model; cached answers are reused."""
     if cfg.limit:
         probes = probes[: cfg.limit]
+    configure(reasoning=cfg.reasoning)
     cache = ResponseCache(cfg.cache_path)
     jobs: list[tuple[str, Probe]] = [(m, p) for m in cfg.models for p in probes]
     out: list[Response] = []
@@ -61,7 +63,7 @@ def run_probes(probes: list[Probe], cfg: RunConfig) -> list[Response]:
         model_q, probe = job
         prefix, model = split_model(model_q)
         prov = get_provider(prefix)
-        k = ResponseCache.key(model_q, probe, repr(prov.settings))
+        k = ResponseCache.key(model_q, probe, repr(prov.settings) + f"|reasoning={cfg.reasoning}")
         hit = cache.get(k)
         if hit is not None:
             return hit
@@ -111,8 +113,13 @@ def score_responses(probes: list[Probe], responses: list[Response], hit_words: i
         null_hit = None
         if pool:
             null_hit = scorer(rng.choice(pool), r.text, *args)[0]
+        reasoning = r.raw_meta.get("reasoning") or ""
+        r_hit, guard = (None, None)
+        if reasoning:
+            r_hit, guard = reasoning_signals(reasoning, p.truth, p.family, min_run=min(12, hit_words))
         scores.append(Score(p.id, r.model, p.tier, p.group, p.family, hit, ep, run, sim,
-                            looks_unknown(r.text), refused=False, null_hit=null_hit, meta=dict(p.meta)))
+                            looks_unknown(r.text), refused=False, null_hit=null_hit,
+                            reasoning_hit=r_hit, guardrail=guard, meta=dict(p.meta)))
     return scores
 
 

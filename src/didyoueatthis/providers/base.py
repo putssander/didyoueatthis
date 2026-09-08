@@ -19,10 +19,17 @@ class Settings:
     seed          passed to vendors that accept one (OpenAI).
     logprobs      request token log-probabilities where the model supports it;
                   stored in ``raw_meta['logprobs']`` for likelihood analyses.
+    reasoning     ask for the model's own reasoning output through the vendor's
+                  documented option (OpenAI Responses API reasoning summaries,
+                  Gemini ``include_thoughts``, Anthropic summarised thinking) and
+                  store it in ``raw_meta['reasoning']``.  These are vendor-produced
+                  summaries, not raw chains of thought; nothing is decrypted or
+                  replayed.  Used to tell a guardrail refusal from ignorance.
     """
     temperature: float = 0.0
     seed: int | None = 0
     logprobs: bool = False
+    reasoning: bool = False
     timeout_s: float = 120.0
 
 

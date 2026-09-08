@@ -42,6 +42,9 @@ class AnthropicProvider(Provider):
         meta: dict = {}
         if probe.system:
             kw["system"] = probe.system
+        if self.settings.reasoning:
+            kw["thinking"] = {"type": "adaptive", "display": "summarized"}
+            kw["max_tokens"] = probe.max_tokens + 2048
         if model.startswith(_SAMPLING_OK_PREFIXES):
             kw["temperature"] = self.settings.temperature
         else:
@@ -52,5 +55,8 @@ class AnthropicProvider(Provider):
         if refused and getattr(resp, "stop_details", None) is not None:
             meta["refusal_category"] = getattr(resp.stop_details, "category", None)
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        thinking = "\n\n".join(getattr(b, "thinking", "") or "" for b in resp.content if getattr(b, "type", "") == "thinking")
+        if thinking.strip():
+            meta["reasoning"] = thinking
         usage = resp.usage.model_dump() if resp.usage else {}
         return Response(probe_id=probe.id, model=model, text=text, refused=refused, usage=usage, raw_meta=meta)

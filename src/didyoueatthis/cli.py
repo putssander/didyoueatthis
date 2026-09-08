@@ -114,7 +114,8 @@ def _run_text_docs(targets, controls, models, a, run_dir, meta_extra):
     if getattr(a, "paraphrase_with", None) and "continuation" in methods:
         probes += paraphrase_probes([p for p in probes if p.tier == "target" and p.family == "text"], para[0], para[1])
     cfg = RunConfig(models=models, cache_path=os.path.join(run_dir, "responses.jsonl"), workers=a.workers,
-                    hit_words=a.hit_words, seed=a.seed, limit=a.limit, progress=_progress)
+                    hit_words=a.hit_words, seed=a.seed, limit=a.limit, progress=_progress,
+                    reasoning=getattr(a, "reasoning", False))
     print(f"{len(probes)} probes x {len(models)} models -> {run_dir}", file=sys.stderr)
     responses = run_probes(probes, cfg)
     scores = score_responses(probes, responses, a.hit_words, a.seed)
@@ -132,7 +133,7 @@ def cmd_csv(a):
     probes = build_table_study(df, doc_id, a.n_rows, ctx, a.key_cols, a.seed, os.path.basename(a.file))
     run_dir = a.run_dir or os.path.join("results", f"csv_{doc_id}_{time.strftime('%Y%m%d-%H%M%S')}")
     cfg = RunConfig(models=a.models, cache_path=os.path.join(run_dir, "responses.jsonl"), workers=a.workers,
-                    seed=a.seed, limit=a.limit, progress=_progress)
+                    seed=a.seed, limit=a.limit, progress=_progress, reasoning=getattr(a, "reasoning", False))
     print(f"{len(probes)} probes x {len(a.models)} models -> {run_dir}", file=sys.stderr)
     responses = run_probes(probes, cfg)
     scores = score_responses(probes, responses, seed=a.seed)
@@ -177,6 +178,7 @@ def cmd_testsets(a):
 
 MARK_P = "##### PROMPT {n} #####"
 MARK_A = "##### ANSWER {n} #####"
+MARK_T = "##### THINKING {n} #####"   # optional: the reasoning the chat app displayed
 
 
 def cmd_manual(a):
@@ -190,11 +192,15 @@ def cmd_manual(a):
     """
     import re as _re
     if a.sub == "export":
-        prefixes = tuple(int(x) for x in a.prefix_words.split(","))
+        a.methods = getattr(a, "methods", "continuation")
+        a.hit_words = 20
+        methods = [m.strip() for m in a.methods.split(",")]
         probes = []
-        for path, tier in [(a.doc, "target"), *[(c, "control") for c in (a.control or [])]]:
-            did = os.path.splitext(os.path.basename(path))[0]
-            probes += with_sources(build_text_probes(open(path, encoding="utf-8").read(), tier, did, a.passages, prefixes, a.suffix_words, a.seed), read_sources(path))
+        for path, tier in [*[(d, "target") for d in a.doc], *[(c, "control") for c in (a.control or [])]]:
+            probes += _build_doc_probes(path, tier, a, methods, None)
+        if getattr(a, "canary_registry", None):
+            from .core import canary as C
+            probes += C.check_probes(C.load_registry(a.canary_registry))
         ensure_dir(a.dir)
         pp = os.path.join(a.dir, "probes.jsonl")
         if os.path.exists(pp):
@@ -210,18 +216,28 @@ def cmd_manual(a):
                 f.write("## Source credits and reuse notices (keep with this file; do not paste into the chat)\n\n"
                         + source_notice(credits) + "\n")
         with open(os.path.join(a.dir, "answers.md"), "w", encoding="utf-8") as f:
-            f.write("".join(f"{MARK_A.format(n=i)}\n\n\n" for i in range(1, len(probes) + 1)))
+            f.write("Paste each reply under its ANSWER marker. If the chat app showed the model's reasoning, paste "
+                    "that under the matching THINKING marker (optional): it shows whether a refusal was a guardrail.\n\n")
+            f.write("".join(f"{MARK_A.format(n=i)}\n\n\n{MARK_T.format(n=i)}\n\n\n" for i in range(1, len(probes) + 1)))
         print(f"{len(probes)} prompts -> {a.dir}/prompts.md; fill {a.dir}/answers.md, then: "
               f"didyoueatthis manual score --dir {a.dir}", file=sys.stderr)
         return
     from .core.probe import Response
     probes = [Probe(**d) for d in load_jsonl(os.path.join(a.dir, "probes.jsonl"))]
     text = open(a.answers or os.path.join(a.dir, "answers.md"), encoding="utf-8").read()
+    # Blocks: "##### ANSWER n #####" and optional "##### THINKING n #####" (what the chat app showed as reasoning).
+    thinking: dict[int, str] = {}
+    parts = _re.split(r"#####\s*THINKING\s+(\d+)\s*#####", text)
+    for i in range(1, len(parts) - 1, 2):
+        thinking[int(parts[i])] = _re.split(r"#####\s*ANSWER\s+\d+\s*#####", parts[i + 1])[0].strip()
     parts = _re.split(r"#####\s*ANSWER\s+(\d+)\s*#####", text)
-    answers = {int(parts[i]): parts[i + 1].strip() for i in range(1, len(parts) - 1, 2)}
+    answers = {int(parts[i]): _re.split(r"#####\s*THINKING\s+\d+\s*#####", parts[i + 1])[0].strip()
+               for i in range(1, len(parts) - 1, 2)}
     label = f"manual:{a.label}"
     responses = [Response(probe_id=p.id, model=label, text=answers.get(i, ""),
-                          error="" if answers.get(i) else "no answer pasted") for i, p in enumerate(probes, 1)]
+                          error="" if answers.get(i) else "no answer pasted",
+                          raw_meta={"reasoning": thinking[i]} if thinking.get(i) else {})
+                 for i, p in enumerate(probes, 1)]
     scores = score_responses(probes, responses, a.hit_words, a.seed)
     rep = _write_run(a.dir, probes, responses, scores,
                      {"family": "text", "mode": "manual", "label": label,
@@ -258,6 +274,52 @@ def cmd_mink(a):
     print(f"-> {run_dir}/mink.json")
 
 
+def cmd_canary(a):
+    """Prospective canaries: plant now, check against models trained later."""
+    from .core import canary as C
+    if a.sub == "make":
+        text = open(a.doc, encoding="utf-8").read()
+        token = C.make_canary()
+        planted = C.plant(text, token)
+        out = a.out or a.doc
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(planted)
+        C.register(a.registry, C.Entry(token, os.path.basename(a.doc), time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                                       C.sha256(planted), out, a.note))
+        print(f"planted {token} in {out}; registry {a.registry}. Publish the document; commit it for a timestamp.")
+        return
+    entries = C.load_registry(a.registry)
+    probes = C.check_probes(entries)
+    run_dir = a.run_dir or os.path.join("results", f"canary_{time.strftime('%Y%m%d-%H%M%S')}")
+    cfg = RunConfig(models=a.models, cache_path=os.path.join(run_dir, "responses.jsonl"), workers=a.workers, seed=a.seed)
+    responses = run_probes(probes, cfg)
+    by = {p.id: p for p in probes}
+    ent = {f"{e.canary}|{e.shown_prefix}": e for e in entries}
+    print(f"{len(entries)} canaries x {len(a.models)} models")
+    rows = []
+    for r in responses:
+        p = by[r.probe_id]; e = ent[p.group]
+        n = C.match_chars(p.truth, r.text)
+        total = len("".join(ch for ch in p.truth if ch.isalnum()))
+        verdict = "EXACT" if n >= total else (f"partial {n}/{total}" if n >= 4 else "no")
+        rows.append((r.model, e.doc_id, e.planted_at[:10], verdict, r.text.strip()[:48].replace("\n", " ")))
+        print(f"  {r.model:26s} {e.doc_id:34s} planted {e.planted_at[:10]}  {verdict:14s} answer: {rows[-1][4]!r}")
+    with open(os.path.join(run_dir, "canary_check.json"), "w") as f:
+        json.dump([{"model": m, "canary": d, "planted": pl, "result": v, "answer": ans} for m, d, pl, v, ans in rows], f, indent=2)
+    if a.exposure_k:
+        from .providers import get_provider, split_model
+        for mq in a.models:
+            pfx, mid = split_model(mq)
+            prov = get_provider(pfx)
+            for e in entries:
+                try:
+                    x = C.exposure(prov, mid, e, a.exposure_k, a.seed)
+                    print(f"  exposure {mq} {e.canary}: rank {x['rank']}/{x['k'] + 1}, {x['exposure_bits']:.1f} of {x['max_bits']:.1f} bits")
+                except NotImplementedError as err:
+                    print(f"  exposure {mq}: {err}")
+                    break
+
+
 def cmd_rescore(a):
     """Re-score and re-report a run directory without re-querying (e.g. after changing scoring)."""
     from .core.probe import Response
@@ -292,6 +354,8 @@ def main(argv=None):
         p.add_argument("--hit-words", type=int, default=20)
 
     def run_opts(p):
+        p.add_argument("--reasoning", action="store_true",
+                       help="also request the vendor's reasoning summary and score it (shows guardrails vs ignorance)")
         p.add_argument("--workers", type=int, default=4)
         p.add_argument("--limit", type=int)
         p.add_argument("--seed", type=int, default=0)
@@ -329,9 +393,11 @@ def main(argv=None):
 
     man = sp.add_parser("manual", help="no API key: export prompts for a chat UI, score pasted answers").add_subparsers(dest="sub", required=True)
     me = man.add_parser("export")
-    me.add_argument("--doc", required=True)
+    me.add_argument("--doc", action="append", required=True, help="document under test (repeatable)")
     me.add_argument("--control", action="append")
     me.add_argument("--dir", required=True, help="output directory (prompts.md, answers.md, probes.jsonl)")
+    me.add_argument("--methods", default="continuation", help="comma list of continuation, cloze")
+    me.add_argument("--canary-registry", help="also add the canaries from this registry as prompts")
     me.add_argument("--passages", type=int, default=6)
     me.add_argument("--prefix-words", default="64")
     me.add_argument("--suffix-words", type=int, default=DEFAULT_SUFFIX_WORDS)
@@ -353,6 +419,22 @@ def main(argv=None):
     mk.add_argument("--max-chunks", type=int, default=20)
     mk.add_argument("--run-dir")
     mk.set_defaults(fn=cmd_mink)
+
+    cn = sp.add_parser("canary", help="prospective canaries: plant now, check against models trained later").add_subparsers(dest="sub", required=True)
+    cm = cn.add_parser("make", help="plant a random canary in a document and record it")
+    cm.add_argument("--doc", required=True)
+    cm.add_argument("--out", help="write the planted copy here (default: overwrite --doc)")
+    cm.add_argument("--registry", default="data/canaries.json")
+    cm.add_argument("--note", default="")
+    cm.set_defaults(fn=cmd_canary)
+    cc = cn.add_parser("check", help="ask models to complete the registered canaries")
+    cc.add_argument("--registry", default="data/canaries.json")
+    cc.add_argument("--models", nargs="+", required=True)
+    cc.add_argument("--exposure-k", type=int, default=0, help="also rank the canary among k random ones by log-likelihood (local models)")
+    cc.add_argument("--workers", type=int, default=4)
+    cc.add_argument("--seed", type=int, default=0)
+    cc.add_argument("--run-dir")
+    cc.set_defaults(fn=cmd_canary)
 
     rs = sp.add_parser("rescore", help="re-score a run directory without re-querying")
     rs.add_argument("--run-dir", required=True)
