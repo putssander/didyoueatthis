@@ -153,6 +153,198 @@ def clean_wiki(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+OLD_WIKI_TITLES = ["Photosynthesis", "Napoleon", "Mitochondrion", "Ada Lovelace", "Great Barrier Reef", "Bicycle",
+                   "Plate tectonics", "Ludwig van Beethoven", "Honey bee", "Printing press", "Mount Everest", "Chess"]
+OLD_WIKI_AS_OF = "2021-01-01T00:00:00Z"
+
+
+def strip_wikitext(w: str) -> str:
+    """Wikitext -> plain prose, good enough for passage probes (templates, refs, tables, files, markup removed)."""
+    w = re.sub(r"<!--.*?-->", "", w, flags=re.S)
+    w = re.sub(r"<ref[^>/]*/>", "", w)
+    w = re.sub(r"<ref[^>]*>.*?</ref>", "", w, flags=re.S)
+    for _ in range(6):  # nested templates
+        w2 = re.sub(r"\{\{[^{}]*\}\}", "", w)
+        if w2 == w:
+            break
+        w = w2
+    w = re.sub(r"\{\|.*?\|\}", "", w, flags=re.S)                 # tables
+    w = re.sub(r"\[\[(?:File|Image|Category)[^\]]*\]\]", "", w, flags=re.I)
+    w = re.sub(r"\[\[[^\]|]*\|([^\]]*)\]\]", r"\1", w)         # [[a|b]] -> b
+    w = re.sub(r"\[\[([^\]]*)\]\]", r"\1", w)                    # [[a]] -> a
+    w = re.sub(r"\[https?://\S+\s+([^\]]*)\]", r"\1", w)         # [url text] -> text
+    w = re.sub(r"\[https?://\S+\]", "", w)
+    w = re.sub(r"<[^>]+>", "", w)                                   # remaining html
+    w = re.sub(r"'{2,}", "", w)                                     # bold/italic quotes
+    w = re.sub(r"^\s*[*#:;].*$", "", w, flags=re.M)                # lists, definitions
+    w = re.sub(r"^==+\s*(.*?)\s*==+\s*$", r"\1", w, flags=re.M)   # headings -> short lines (skipped as headings)
+    w = re.sub(r"&nbsp;", " ", w)
+    w = re.sub(r"\n{3,}", "\n\n", w)
+    return w.strip()
+
+
+def fetch_old_wiki(dest: str, titles: tuple[str, ...] = tuple(OLD_WIKI_TITLES), as_of: str = OLD_WIKI_AS_OF) -> list[str]:
+    """Each article as it stood at `as_of`, from the revision history (plain text via strip_wikitext).
+
+    Stable, famous articles from before every current model's cutoff, mirrored across the web thousands
+    of times: the Wikipedia-genre known positive that matches the fresh-Wikipedia control.
+    """
+    from .core.sources import CC_BY_SA, write_sources
+    os.makedirs(dest, exist_ok=True)
+    out = []
+    for title in titles:
+        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+        p = os.path.join(dest, f"{as_of[:10]}_{slug}.txt")
+        if not os.path.exists(p):
+            q = {"action": "query", "prop": "revisions", "titles": title, "rvlimit": "1", "rvdir": "older",
+                 "rvstart": as_of, "rvprop": "ids|timestamp|content", "rvslots": "main", "format": "json", "formatversion": "2"}
+            data = json.loads(_get(f"{WIKI_API}?{urllib.parse.urlencode(q)}"))
+            page = data["query"]["pages"][0]
+            rev = page["revisions"][0]
+            text = strip_wikitext(rev["slots"]["main"]["content"])
+            if len(text.split()) < 600:
+                continue
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(f"{title}\n\n{text}")
+            write_sources(p, [{"title": title, "author": "Wikipedia contributors", "url": f"https://en.wikipedia.org/w/index.php?title={urllib.parse.quote(title)}&oldid={rev['revid']}",
+                               "history_url": f"https://en.wikipedia.org/w/index.php?title={urllib.parse.quote(title)}&action=history",
+                               "revision_observed": rev["revid"], "revision_timestamp": rev["timestamp"], "retrieved": time.strftime("%Y-%m-%d"),
+                               "license": "CC BY-SA 4.0", "license_url": CC_BY_SA,
+                               "changes": "Historical revision; wikitext markup, templates, references and tables removed; excerpted.",
+                               "notice": "Check third-party quotations separately. No Wikimedia endorsement."}])
+            time.sleep(1.0)
+        out.append(p)
+    return out
+
+
+STABLE_DATES = ("2020-01-01T00:00:00Z", "2023-01-01T00:00:00Z", "2025-01-01T00:00:00Z", None)  # None = current
+
+
+def _revision_text(title: str, as_of: str | None) -> tuple[str, int, str]:
+    q = {"action": "query", "prop": "revisions", "titles": title, "rvlimit": "1", "rvdir": "older",
+         "rvprop": "ids|timestamp|content", "rvslots": "main", "format": "json", "formatversion": "2"}
+    if as_of:
+        q["rvstart"] = as_of
+    data = json.loads(_get(f"{WIKI_API}?{urllib.parse.urlencode(q)}"))
+    rev = data["query"]["pages"][0]["revisions"][0]
+    return strip_wikitext(rev["slots"]["main"]["content"]), rev["revid"], rev["timestamp"]
+
+
+def fetch_stable_wiki(dest: str, titles: tuple[str, ...] = tuple(OLD_WIKI_TITLES), dates=STABLE_DATES) -> list[str]:
+    """Only the paragraphs of each article that are byte-identical across every snapshot date.
+
+    Wikipedia is dynamic, and a model's crawl may predate its cutoff by a long way; a paragraph that has not
+    changed since 2020 was seen in this exact wording by every crawl since. Paragraphs are compared after
+    whitespace normalisation; each file records the stable share and the revision ids used.
+    """
+    from .core.sources import CC_BY_SA, write_sources
+    os.makedirs(dest, exist_ok=True)
+    out = []
+    for title in titles:
+        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+        p = os.path.join(dest, f"stable_{slug}.txt")
+        if not os.path.exists(p):
+            snaps = []
+            for d in dates:
+                text, revid, ts = _revision_text(title, d)
+                snaps.append((text, revid, ts))
+                time.sleep(1.0)
+            paras = [[re.sub(r"\s+", " ", x).strip() for x in t.split("\n\n")] for t, _, _ in snaps]
+            common = set(paras[0])
+            for ps in paras[1:]:
+                common &= set(ps)
+            stable = [x for x in paras[0] if x in common and len(x.split()) >= 40]   # keep the 2020 order
+            words_all = sum(len(x.split()) for x in paras[0] if len(x.split()) >= 40)
+            words_stable = sum(len(x.split()) for x in stable)
+            if words_stable < 400:
+                print(f"stable-wiki: {title}: only {words_stable} stable words, skipped", file=sys.stderr)
+                continue
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(f"{title}\n\n" + "\n\n".join(stable))
+            write_sources(p, [{"title": title, "author": "Wikipedia contributors",
+                               "url": f"https://en.wikipedia.org/w/index.php?title={urllib.parse.quote(title)}&oldid={snaps[0][1]}",
+                               "history_url": f"https://en.wikipedia.org/w/index.php?title={urllib.parse.quote(title)}&action=history",
+                               "revisions_compared": [{"revid": r, "timestamp": ts} for _, r, ts in snaps],
+                               "stable_words": words_stable, "words_in_2020_revision": words_all,
+                               "retrieved": time.strftime("%Y-%m-%d"), "license": "CC BY-SA 4.0", "license_url": CC_BY_SA,
+                               "changes": "Only paragraphs identical across the compared revisions; markup, templates, references and tables removed.",
+                               "notice": "Check third-party quotations separately. No Wikimedia endorsement."}])
+            print(f"stable-wiki: {title}: {words_stable}/{words_all} words unchanged 2020-2026", file=sys.stderr)
+        out.append(p)
+    return out
+
+
+HF_ROWS = "https://datasets-server.huggingface.co/rows"
+CONTROLS_DIR = os.path.join(os.path.dirname(__file__), "controls")
+
+
+def _hf_rows(dataset: str, config: str, split: str, n: int) -> list[dict]:
+    rows = []
+    for offset in range(0, n, 100):
+        q = urllib.parse.urlencode({"dataset": dataset, "config": config, "split": split, "offset": offset, "length": min(100, n - offset)})
+        rows += [r["row"] for r in json.loads(_get(f"{HF_ROWS}?{q}"))["rows"]]
+        time.sleep(0.5)
+    return rows
+
+
+def _write_docs(dest: str, name: str, texts: list[str], source: dict) -> list[str]:
+    from .core.sources import write_sources
+    os.makedirs(dest, exist_ok=True)
+    out = []
+    for i, t in enumerate(texts):
+        p = os.path.join(dest, f"{name}_{i:03d}.txt")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(t.strip() + "\n")
+        write_sources(p, [source])
+        out.append(p)
+    return out
+
+
+def fetch_enron(dest: str, n_emails: int = 40, min_words: int = 120) -> list[str]:
+    """Real Enron employee emails (AESLC subset, Zhang & Tetreault 2019), public since the 2003 FERC release.
+
+    Private correspondence when written, public record for two decades, and inside every large corpus. A model
+    that completes a specific email from its opening trained on people's mail; time has removed the sensitivity,
+    not the lesson.
+    """
+    rows = _hf_rows("Yale-LILY/aeslc", "default", "train", 400)
+    texts = [re.sub(r"[ \t]+", " ", r["email_body"]).strip() for r in rows]
+    texts = [t for t in texts if len(t.split()) >= min_words][:n_emails]
+    return _write_docs(dest, "enron", texts, {"title": "Enron email (AESLC subset)", "author": "Enron employees; corpus released by FERC (2003), AESLC by Zhang & Tetreault (2019)",
+                                             "url": "https://huggingface.co/datasets/Yale-LILY/aeslc", "license": "Public record; AESLC distributed for research",
+                                             "changes": "Whitespace normalised; excerpted.", "notice": "Contains real names of former employees; do not redistribute replies beyond what the check needs."})
+
+
+def fetch_gsm8k(dest: str, n: int = 40, min_words: int = 45) -> list[str]:
+    """GSM8K *test* questions (MIT licence). A benchmark's held-out set is exactly what a model should not have
+    studied; completing a question's exact wording from its first half is contamination, not arithmetic."""
+    rows = _hf_rows("openai/gsm8k", "main", "test", 300)
+    texts = [re.sub(r"\s+", " ", r["question"]).strip() for r in rows]
+    texts = [t for t in texts if len(t.split()) >= min_words][:n]
+    return _write_docs(dest, "gsm8k", texts, {"title": "GSM8K test question", "author": "Cobbe et al. (OpenAI), 2021",
+                                             "url": "https://huggingface.co/datasets/openai/gsm8k", "license": "MIT", "license_url": "https://opensource.org/license/mit",
+                                             "changes": "Whitespace normalised; the question text only.", "notice": ""})
+
+
+def control_docs(name: str, root: str = "data/testsets") -> list[str]:
+    """Genre-matched, unpublished controls shipped with the package (written for this project, CC0).
+
+    The file holds one control text per paragraph (after the first, explanatory paragraph); each becomes its
+    own document so that every control text is an independent group, like the target documents."""
+    text = open(os.path.join(CONTROLS_DIR, name), encoding="utf-8").read()
+    paras = [x.strip() for x in text.split("\n\n") if x.strip()][1:]
+    dest = os.path.join(root, "controls", name.replace(".txt", ""))
+    os.makedirs(dest, exist_ok=True)
+    out = []
+    for i, para in enumerate(paras):
+        pth = os.path.join(dest, f"control_{i:02d}.txt")
+        if not os.path.exists(pth):
+            with open(pth, "w", encoding="utf-8") as f:
+                f.write(para + "\n")
+        out.append(pth)
+    return out
+
+
 def fetch_titanic(dest: str) -> list[str]:
     os.makedirs(dest, exist_ok=True)
     p = os.path.join(dest, "titanic.csv")
@@ -169,6 +361,11 @@ class TestSet:
     expected: str                # verdict expected from a model trained on the open web
     fetch: Callable[[str], list[str]]
     note: str
+    control: str = "fresh-wiki"  # "fresh-wiki", or a file name under controls/ (genre-matched, unpublished)
+    prefix_words: str = "16,32,64,128"
+    suffix_words: int = 40
+    hit_words: int = 20
+    passages: int | None = None  # per document; None = the CLI default
 
 
 SETS: dict[str, TestSet] = {
@@ -176,6 +373,16 @@ SETS: dict[str, TestSet] = {
                          "Four nineteenth-century novels; plausible positive references. Check local public-domain and edition rights."),
     "fresh-wiki": TestSet("fresh-wiki", "text", "no_signal", fetch_fresh_wiki,
                           "Recent Wikipedia articles with attribution; wording may reuse older sources. Not guaranteed unseen."),
+    "old-wiki": TestSet("old-wiki", "text", "strong_memorization", fetch_old_wiki,
+                        "Famous Wikipedia articles as of 2021-01-01, before every current cutoff and mirrored everywhere: the Wikipedia-genre positive."),
+    "stable-wiki": TestSet("stable-wiki", "text", "strong_memorization", fetch_stable_wiki,
+                           "Paragraphs of famous Wikipedia articles unchanged from 2020 to today: seen in this wording by every crawl."),
+    "enron": TestSet("enron", "text", "memorization_signal", fetch_enron,
+                     "Real Enron emails (public record since 2003): were models trained on people's private mail?",
+                     control="emails.txt", prefix_words="32,64", suffix_words=30, hit_words=15, passages=1),
+    "gsm8k": TestSet("gsm8k", "text", "memorization_signal", fetch_gsm8k,
+                     "GSM8K held-out test questions (MIT): does the model know the exam by heart?",
+                     control="word-problems.txt", prefix_words="16,32", suffix_words=20, hit_words=12, passages=1),
     "titanic": TestSet("titanic", "csv", "strong_memorization", fetch_titanic,
                        "The Kaggle Titanic table, copied into countless repositories and notebooks."),
 }

@@ -159,10 +159,17 @@ def cmd_testsets(a):
     if ts.kind == "csv":
         a.file, a.run_dir = files[0], run_dir
         return cmd_csv(a)
-    # Text sets: the control tier is always fresh Wikipedia (for fresh-wiki itself, the second half).
+    # Text sets: the control is fresh Wikipedia unless the set ships a genre-matched control file.
+    from .testsets import control_docs
+    if ts.prefix_words != "16,32,64,128" and a.prefix_words == ",".join(map(str, DEFAULT_PREFIX_WORDS)):
+        a.prefix_words, a.suffix_words, a.hit_words = ts.prefix_words, ts.suffix_words, ts.hit_words
+    if ts.passages and a.passages == 12:
+        a.passages = ts.passages
     if a.name == "fresh-wiki":
         half = len(files) // 2
         targets, controls = files[:half], files[half:]
+    elif ts.control != "fresh-wiki":
+        targets, controls = files, control_docs(ts.control, a.root)
     else:
         targets = files
         controls = SETS["fresh-wiki"].fetch(testset_dir("fresh-wiki", a.root))
@@ -381,7 +388,7 @@ def main(argv=None):
     tsp.add_parser("list").set_defaults(fn=cmd_testsets)
     for name, help_ in (("fetch", "download a set"), ("run", "fetch (if needed) and run a set")):
         q = tsp.add_parser(name, help=help_)
-        q.add_argument("name", choices=["gutenberg", "fresh-wiki", "titanic"])
+        q.add_argument("name", choices=["gutenberg", "fresh-wiki", "old-wiki", "stable-wiki", "enron", "gsm8k", "titanic"])
         q.add_argument("--root", default="data/testsets")
         if name == "run":
             q.add_argument("--models", nargs="+", required=True)
