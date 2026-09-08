@@ -1,0 +1,63 @@
+# Test sets: calibrating the procedure on material with known status
+
+A verdict on your own document is only as good as the procedure's behaviour on
+documents whose status you already know. Run the calibration sets below
+against the same models with the same settings *first*. If the known-positive
+does not come back `strong_memorization`, the model is refusing or the prompt
+is not eliciting recall, and a `no_signal` on your document means nothing. If
+the known-negative comes back with hits, the criterion is too loose for that
+model or genre and the threshold (`--hit-words`) must go up.
+
+## Sets that can be fetched automatically
+
+| set | kind | expected verdict | why the status is known |
+|---|---|---|---|
+| `gutenberg` | text | `strong_memorization` | Four public-domain novels (Pride and Prejudice, Moby-Dick, Alice, Frankenstein). In every web corpus and duplicated thousands of times; extractability rises steeply with duplication (Kandpal et al. 2022), so even tuned chat models continue them verbatim. |
+| `fresh-wiki` | text | `no_signal` | English Wikipedia articles created in the last few days, fetched live. They did not exist when any current model was trained. Also the best generic *control* for prose targets: same register as much of the web, and dated. |
+| `titanic` | csv | `strong_memorization` | The Kaggle Titanic table. Passenger names, ticket numbers and fares are high-entropy, and the file sits in an enormous number of public notebooks and repositories. Tests the row-continuation probe with a built-in synthetic control. |
+
+```bash
+uv run didyoueatthis testsets list
+uv run didyoueatthis testsets run gutenberg  --models openai:gpt-5 anthropic:claude-opus-5   # control: fresh-wiki
+uv run didyoueatthis testsets run fresh-wiki --models openai:gpt-5 anthropic:claude-opus-5   # target/control: two halves
+uv run didyoueatthis testsets run titanic    --models openai:gpt-5 anthropic:claude-opus-5   # control: synthetic rows
+```
+
+Each run prints `CALIBRATION <set> <model>: expected X, got Y -> OK|MISMATCH`.
+
+## The set only you can supply: your own unpublished text
+
+The cleanest negative is writing that has never left your machine: drafts,
+notes, an unpublished manuscript. Use it as `--control` for a target of the
+same genre. Its status is certain; every fetched negative is only *almost*
+certain (a new Wikipedia article can paste text from an older public source).
+
+## Why the published MIA benchmarks are not wired in
+
+WikiMIA and BookMIA (Shi et al. 2024), MIMIR (Duan et al. 2024) and similar
+sets were built with member/non-member labels relative to 2023-era models.
+They have since been downloaded, mirrored and quoted; for any model trained
+after their release *both* halves are members. Using them as negatives
+against a 2026 model would manufacture false "no signal" baselines. They
+remain useful for open-weight models with a known, older cutoff, which is a
+different study.
+
+## Matching controls to targets
+
+The control's job is to estimate how often the criterion fires on unseen
+text *of the same kind*. Mismatched controls mislead in both directions:
+
+| target | good control | poor control |
+|---|---|---|
+| a 2019 journal article | a 2026 preprint in the same field, same length | fresh Wikipedia (different register) |
+| a novel | recent self-published fiction you are sure is unindexed, or your own prose | Gutenberg (that is a positive) |
+| a CSV table | the built-in synthetic rows | another public table |
+| an internal report | a second internal report | anything public |
+
+## What a calibration cannot tell you
+
+Calibration verifies that the *procedure* separates seen from unseen text for
+a given model. It does not calibrate a probability for your document; the
+verdict remains an evidence category (docs/01-design.md, section 4), and a
+positive still needs a search for other public copies before it is attributed
+to your specific file.

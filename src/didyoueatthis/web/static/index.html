@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>didyoueatthis</title>
+<style>
+  :root { --bg:#fafaf7; --fg:#1c1c1a; --muted:#6b6b66; --line:#ddd; --ok:#1d7a46; --warn:#b3640c; --bad:#a32b2b; --card:#fff; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161615; --fg:#ececea; --muted:#a0a09a; --line:#333; --card:#1f1f1e; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
+  main { max-width:1000px; margin:0 auto; padding:24px 20px 60px; }
+  h1 { font-size:22px; margin:0 0 4px; } .sub { color:var(--muted); margin:0 0 20px; }
+  textarea, input, select { width:100%; box-sizing:border-box; background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:8px; font:inherit; }
+  textarea { min-height:180px; font-family:ui-monospace, monospace; font-size:13px; }
+  label { display:block; font-weight:600; margin:14px 0 4px; } .hint { color:var(--muted); font-weight:400; font-size:13px; }
+  .row { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px,1fr)); gap:12px; }
+  button { background:var(--fg); color:var(--bg); border:0; border-radius:6px; padding:10px 18px; font:inherit; font-weight:600; cursor:pointer; margin-top:16px; }
+  button:disabled { opacity:.5; cursor:default; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px; margin-top:20px; }
+  .verdict { font-size:18px; font-weight:700; } .v-strong { color:var(--bad); } .v-signal { color:var(--warn); } .v-none { color:var(--ok); } .v-inc { color:var(--muted); }
+  table { border-collapse:collapse; width:100%; font-size:13px; margin-top:10px; } th, td { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; } td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .wrap { overflow-x:auto; } pre { white-space:pre-wrap; font-size:12px; background:var(--bg); padding:8px; border-radius:6px; }
+  details { margin-top:10px; } summary { cursor:pointer; }
+  .models label { font-weight:400; display:inline-flex; gap:6px; align-items:center; margin:4px 12px 4px 0; }
+  progress { width:100%; height:10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>didyoueatthis</h1>
+  <p class="sub">Paste a document. The models are asked to continue passages of it verbatim; exact reproduction that a matched control does not show is graded as memorisation evidence. This never proves training-set membership, and "no signal" is not evidence of absence. <a href="https://github.com/">docs/01-design.md</a> explains the grading.</p>
+
+  <label>Document under test <span class="hint">(at least a few hundred words; the longer and more distinctive, the better)</span></label>
+  <textarea id="doc" placeholder="Paste the document text here…"></textarea>
+
+  <label>Control document <span class="hint">(optional but strongly recommended: same genre and length, written after the models' training cutoff or otherwise certainly unseen)</span></label>
+  <textarea id="ctrl" style="min-height:100px" placeholder="Paste a matched control text here…"></textarea>
+
+  <label>Models</label>
+  <div class="models" id="models"></div>
+  <input id="custom" placeholder="Add: provider:model-id (e.g. openai:gpt-5, anthropic:claude-opus-5, google:gemini-2.5-pro, local:llama3)">
+
+  <div class="row">
+    <div><label>Passages <span class="hint">per document</span></label><input id="passages" type="number" value="12" min="3" max="60"></div>
+    <div><label>Prefix words <span class="hint">comma-separated sweep</span></label><input id="prefix" value="16,32,64,128"></div>
+    <div><label>Suffix words <span class="hint">held-out target</span></label><input id="suffix" type="number" value="40" min="10" max="120"></div>
+    <div><label>Hit threshold <span class="hint">leading words exact</span></label><input id="hitw" type="number" value="20" min="5" max="120"></div>
+  </div>
+  <label>Paraphrase tier <span class="hint">(optional: model used to rewrite each passage; a model that continues the original but not the rewrite is reproducing form, not content)</span></label>
+  <input id="para" placeholder="e.g. openai:gpt-5 — leave empty to skip">
+
+  <button id="go">Run test</button>
+  <div id="status" class="card" hidden></div>
+  <div id="result" hidden></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const chosen = new Set();
+fetch('/api/models').then(r => r.json()).then(d => {
+  const box = $('models');
+  if (d.prefixes.length <= 1) box.innerHTML = '<span class="hint">No API keys found in the environment (.env). Only the mock provider is available.</span>';
+  d.prefixes.forEach(p => (d.suggested[p] || []).forEach(m => addModel(`${p}:${m}`, p !== 'mock')));
+});
+function addModel(id, on) {
+  const box = $('models');
+  const l = document.createElement('label');
+  const c = document.createElement('input'); c.type = 'checkbox'; c.value = id; c.checked = on; if (on) chosen.add(id);
+  c.onchange = () => c.checked ? chosen.add(id) : chosen.delete(id);
+  l.append(c, document.createTextNode(id)); box.append(l);
+}
+$('custom').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.value.includes(':')) { addModel(e.target.value.trim(), true); e.target.value = ''; } });
+
+$('go').onclick = async () => {
+  const body = {
+    text: $('doc').value, controls: $('ctrl').value.trim() ? [$('ctrl').value] : [], models: [...chosen],
+    passages: +$('passages').value, prefix_words: $('prefix').value.split(',').map(Number).filter(Boolean),
+    suffix_words: +$('suffix').value, hit_words: +$('hitw').value, paraphrase_with: $('para').value.trim() || null,
+  };
+  if (body.text.length < 200) return alert('Paste a longer document (200+ characters).');
+  if (!body.models.length) return alert('Pick at least one model.');
+  $('go').disabled = true; $('status').hidden = false; $('result').hidden = true;
+  $('status').innerHTML = 'Starting…';
+  const r = await fetch('/api/jobs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) { $('status').textContent = 'Error: ' + (await r.text()); $('go').disabled = false; return; }
+  const { id } = await r.json();
+  const timer = setInterval(async () => {
+    const j = await (await fetch('/api/jobs/' + id)).json();
+    if (j.stage === 'done') { clearInterval(timer); $('status').hidden = true; render(j); $('go').disabled = false; }
+    else if (j.stage === 'error') { clearInterval(timer); $('status').textContent = 'Error: ' + j.error; $('go').disabled = false; }
+    else $('status').innerHTML = `<div>${j.stage} ${j.total ? j.done + ' / ' + j.total + ' answers' : ''}</div><progress max="${j.total || 1}" value="${j.done || 0}"></progress>`;
+  }, 1500);
+};
+
+const cls = { strong_memorization: 'v-strong', memorization_signal: 'v-signal', no_signal: 'v-none', inconclusive: 'v-inc' };
+function render(j) {
+  const out = $('result'); out.hidden = false; out.innerHTML = '';
+  for (const [model, fams] of Object.entries(j.report.models)) for (const [fam, r] of Object.entries(fams)) {
+    const card = document.createElement('div'); card.className = 'card';
+    let h = `<div class="hint">${model}</div><div class="verdict ${cls[r.verdict]}">${r.verdict.replace('_', ' ')}</div><p>${r.verdict_text}</p>`;
+    h += '<div class="wrap"><table><tr><th>tier</th><th>passages</th><th>reproduced</th><th>rate [95% CI]</th><th>unknown</th><th>refused</th><th>mean exact-prefix words</th><th>longest exact run</th></tr>';
+    for (const [t, s] of Object.entries(r.tiers)) h += `<tr><td>${t}</td><td class="num">${s.n_groups}</td><td class="num">${s.hit_groups}</td><td class="num">${s.rate.toFixed(2)} [${s.ci_lo.toFixed(2)}, ${s.ci_hi.toFixed(2)}]</td><td class="num">${s.unknown}</td><td class="num">${s.refused}</td><td class="num">${s.mean_exact_prefix.toFixed(1)}</td><td class="num">${s.max_longest_run}</td></tr>`;
+    h += '</table></div>';
+    const keys = [...new Set(Object.values(r.breakdown).flatMap(o => Object.keys(o)))].sort((a, b) => a - b);
+    h += `<div class="wrap"><table><tr><th>reproduced / passages by ${r.breakdown_key}</th>${keys.map(k => `<th>${k}</th>`).join('')}</tr>`;
+    for (const [t, o] of Object.entries(r.breakdown)) h += `<tr><td>${t}</td>${keys.map(k => `<td class="num">${o[k] ? o[k].hit_groups + '/' + o[k].n_groups : '–'}</td>`).join('')}</tr>`;
+    h += '</table></div>';
+    const ex = j.examples.filter(e => e.model === model);
+    const hits = ex.filter(e => r.hits.some(x => x.group === e.group && x.prefix_words === e.prefix_words));
+    h += `<details><summary>${hits.length} reproduced answers, ${ex.length} answers in total (${j.run_dir})</summary>`;
+    for (const e of (hits.length ? hits : ex.slice(0, 8))) h += `<p class="hint">${e.tier} · ${e.group} · prefix ${e.prefix_words}</p><pre>TRUTH:  ${esc(e.truth)}\nANSWER: ${esc(e.error || (e.refused ? '[refused]' : e.answer))}</pre>`;
+    h += '</details>';
+    card.innerHTML = h; out.append(card);
+  }
+  const md = document.createElement('details'); md.className = 'card'; md.innerHTML = `<summary>Markdown report</summary><pre>${esc(j.markdown)}</pre>`; out.append(md);
+}
+const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+# Fetched test sets, run outputs (they contain verbatim model answers), secrets, environments.
+data/
+results/
+*.jsonl
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.pytest_cache/
